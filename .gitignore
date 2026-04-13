@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# local credentials and scripts
+_API/
+_TERMINAL_SCRIPT/
+
 # vercel
 .vercel
 
