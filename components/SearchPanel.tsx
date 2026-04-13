@@ -5,7 +5,7 @@ import type { ImageResult, Provider } from "@/lib/types";
 import { cn, proxied } from "@/lib/utils";
 import { Search, Plus, Loader2, ExternalLink } from "lucide-react";
 
-const ALL: Provider[] = ["unsplash", "pexels", "pixabay"];
+const ALL: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest"];
 
 interface Props {
   onAdd: (img: ImageResult) => void;
@@ -51,7 +51,8 @@ export default function SearchPanel({ onAdd }: Props) {
     setProviders(prev => (prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]));
   }
 
-  const allMissing = missingKeys && ALL.every(p => missingKeys[p]);
+  const apiProviders: Provider[] = ["unsplash", "pexels", "pixabay"];
+  const allMissing = missingKeys && apiProviders.every(p => missingKeys[p]);
 
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">

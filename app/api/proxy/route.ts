@@ -8,7 +8,7 @@ const ALLOWED_HOSTS = new Set([
   "images.pexels.com",
   "pixabay.com",
   "cdn.pixabay.com",
-  "pixabay.com",
+  "i.pinimg.com",
 ]);
 
 export async function GET(req: NextRequest) {

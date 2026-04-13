@@ -4,13 +4,14 @@ import { expandQuery } from "@/lib/expand";
 import type { ImageResult, Provider } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const providers = Array.isArray(body.providers) && body.providers.length
     ? (body.providers as Provider[])
-    : (["unsplash", "pexels", "pixabay"] as Provider[]);
+    : (["unsplash", "pexels", "pixabay", "pinterest"] as Provider[]);
 
   if (!prompt) {
     return NextResponse.json({ error: "prompt required" }, { status: 400 });
@@ -38,6 +39,7 @@ export async function POST(req: NextRequest) {
       unsplash: !process.env.UNSPLASH_ACCESS_KEY,
       pexels: !process.env.PEXELS_API_KEY,
       pixabay: !process.env.PIXABAY_API_KEY,
+      pinterest: false,
     },
   });
 }

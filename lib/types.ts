@@ -1,4 +1,4 @@
-export type Provider = "unsplash" | "pexels" | "pixabay";
+export type Provider = "unsplash" | "pexels" | "pixabay" | "pinterest";
 
 export interface ImageResult {
   id: string;

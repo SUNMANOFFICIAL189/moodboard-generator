@@ -2,16 +2,18 @@ import type { ImageResult, Provider } from "../types";
 import { searchUnsplash } from "./unsplash";
 import { searchPexels } from "./pexels";
 import { searchPixabay } from "./pixabay";
+import { searchPinterest } from "./pinterest";
 
 export async function searchAll(
   query: string,
-  providers: Provider[] = ["unsplash", "pexels", "pixabay"],
+  providers: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest"],
   perPage = 12,
 ): Promise<ImageResult[]> {
   const jobs: Promise<ImageResult[]>[] = [];
   if (providers.includes("unsplash")) jobs.push(searchUnsplash(query, perPage));
   if (providers.includes("pexels")) jobs.push(searchPexels(query, perPage));
   if (providers.includes("pixabay")) jobs.push(searchPixabay(query, perPage));
+  if (providers.includes("pinterest")) jobs.push(searchPinterest(query, perPage));
 
   const settled = await Promise.allSettled(jobs);
   const results: ImageResult[] = [];
