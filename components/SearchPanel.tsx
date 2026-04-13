@@ -3,7 +3,7 @@
 import { useState, FormEvent } from "react";
 import type { ImageResult, Provider } from "@/lib/types";
 import { cn, proxied } from "@/lib/utils";
-import { Search, Plus, Loader2, ExternalLink } from "lucide-react";
+import { Search, Plus, Loader2, ExternalLink, X } from "lucide-react";
 
 const ALL: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest"];
 
@@ -105,6 +105,17 @@ export default function SearchPanel({ onAdd }: Props) {
       </form>
 
       <div className="flex-1 overflow-y-auto p-3">
+        {results.length > 0 && (
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-xs text-neutral-400">{results.length} results</span>
+            <button
+              onClick={() => { setResults([]); setQueries([]); }}
+              className="flex items-center gap-1 rounded-md border border-neutral-800 px-2 py-1 text-[11px] text-neutral-400 transition hover:border-neutral-600 hover:text-neutral-200"
+            >
+              <X className="h-3 w-3" /> Clear results
+            </button>
+          </div>
+        )}
         {allMissing && (
           <div className="mb-3 rounded-lg border border-amber-900/50 bg-amber-950/30 p-3 text-xs text-amber-200">
             No API keys found. Add <code className="rounded bg-amber-900/40 px-1">UNSPLASH_ACCESS_KEY</code>,

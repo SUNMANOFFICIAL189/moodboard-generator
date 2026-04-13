@@ -7,6 +7,8 @@ import useImage from "use-image";
 import type { BoardItem } from "@/lib/types";
 import { proxied } from "@/lib/utils";
 
+const GAP = 10;
+
 export interface CanvasHandle {
   exportPNG: () => string | null;
 }
@@ -14,13 +16,86 @@ export interface CanvasHandle {
 interface Props {
   items: BoardItem[];
   selectedId: string | null;
+  snapEnabled: boolean;
   onSelect: (id: string | null) => void;
   onChange: (id: string, patch: Partial<BoardItem>) => void;
   onBringToFront: (id: string) => void;
 }
 
+function snapToNeighbors(
+  dragId: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  items: BoardItem[],
+  threshold = 12,
+): { x: number; y: number } {
+  let snappedX = x;
+  let snappedY = y;
+  let dxMin = threshold;
+  let dyMin = threshold;
+
+  const dragEdges = {
+    left: x,
+    right: x + w,
+    top: y,
+    bottom: y + h,
+    cx: x + w / 2,
+    cy: y + h / 2,
+  };
+
+  for (const other of items) {
+    if (other.id === dragId) continue;
+    const o = {
+      left: other.x,
+      right: other.x + other.width,
+      top: other.y,
+      bottom: other.y + other.height,
+      cx: other.x + other.width / 2,
+      cy: other.y + other.height / 2,
+    };
+
+    // X-axis: snap edges with GAP
+    const xSnaps = [
+      { drag: dragEdges.right, target: o.left - GAP, offset: 0 },    // right edge → left of other, with gap
+      { drag: dragEdges.left, target: o.right + GAP, offset: 0 },    // left edge → right of other, with gap
+      { drag: dragEdges.left, target: o.left, offset: 0 },           // left → left align
+      { drag: dragEdges.right, target: o.right, offset: 0 },         // right → right align
+      { drag: dragEdges.cx, target: o.cx, offset: 0 },               // center → center align
+    ];
+
+    for (const s of xSnaps) {
+      const d = Math.abs(s.drag - s.target);
+      if (d < dxMin) {
+        dxMin = d;
+        snappedX = s.target - (s.drag - x) + s.offset;
+      }
+    }
+
+    // Y-axis: snap edges with GAP
+    const ySnaps = [
+      { drag: dragEdges.bottom, target: o.top - GAP, offset: 0 },    // bottom → top of other, with gap
+      { drag: dragEdges.top, target: o.bottom + GAP, offset: 0 },    // top → bottom of other, with gap
+      { drag: dragEdges.top, target: o.top, offset: 0 },             // top → top align
+      { drag: dragEdges.bottom, target: o.bottom, offset: 0 },       // bottom → bottom align
+      { drag: dragEdges.cy, target: o.cy, offset: 0 },               // center → center align
+    ];
+
+    for (const s of ySnaps) {
+      const d = Math.abs(s.drag - s.target);
+      if (d < dyMin) {
+        dyMin = d;
+        snappedY = s.target - (s.drag - y) + s.offset;
+      }
+    }
+  }
+
+  return { x: snappedX, y: snappedY };
+}
+
 const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
-  { items, selectedId, onSelect, onChange, onBringToFront },
+  { items, selectedId, snapEnabled, onSelect, onChange, onBringToFront },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -104,7 +179,9 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
             <BoardImage
               key={item.id}
               item={item}
+              allItems={items}
               isSelected={item.id === selectedId}
+              snapEnabled={snapEnabled}
               onSelect={() => {
                 onSelect(item.id);
                 onBringToFront(item.id);
@@ -126,12 +203,16 @@ export default Canvas;
 
 function BoardImage({
   item,
+  allItems,
   isSelected,
+  snapEnabled,
   onSelect,
   onChange,
 }: {
   item: BoardItem;
+  allItems: BoardItem[];
   isSelected: boolean;
+  snapEnabled: boolean;
   onSelect: () => void;
   onChange: (patch: Partial<BoardItem>) => void;
 }) {
@@ -146,6 +227,33 @@ function BoardImage({
     }
   }, [isSelected]);
 
+  function handleDragMove(e: Konva.KonvaEventObject<DragEvent>) {
+    if (!snapEnabled) return;
+    const node = e.target;
+    const snapped = snapToNeighbors(
+      item.id,
+      node.x(),
+      node.y(),
+      item.width,
+      item.height,
+      allItems,
+    );
+    node.x(snapped.x);
+    node.y(snapped.y);
+  }
+
+  function handleDragEnd(e: Konva.KonvaEventObject<DragEvent>) {
+    const node = e.target;
+    let x = node.x();
+    let y = node.y();
+    if (snapEnabled) {
+      const snapped = snapToNeighbors(item.id, x, y, item.width, item.height, allItems);
+      x = snapped.x;
+      y = snapped.y;
+    }
+    onChange({ x, y });
+  }
+
   return (
     <>
       <KImage
@@ -159,7 +267,8 @@ function BoardImage({
         draggable
         onClick={onSelect}
         onTap={onSelect}
-        onDragEnd={e => onChange({ x: e.target.x(), y: e.target.y() })}
+        onDragMove={handleDragMove}
+        onDragEnd={handleDragEnd}
         onTransformEnd={() => {
           const node = shapeRef.current;
           if (!node) return;

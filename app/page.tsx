@@ -6,13 +6,14 @@ import SearchPanel from "@/components/SearchPanel";
 import { useBoard } from "@/lib/store";
 import { exportZip, exportCanvasPNG } from "@/lib/export";
 import type { CanvasHandle } from "@/components/Canvas";
-import { Download, FileImage, Trash2, Sparkles } from "lucide-react";
+import { Download, FileImage, Trash2, Sparkles, Magnet } from "lucide-react";
 
 const Canvas = dynamic(() => import("@/components/Canvas"), { ssr: false });
 
 export default function Home() {
   const { items, hydrated, addImage, updateItem, removeItem, bringToFront, clear } = useBoard();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const canvasRef = useRef<CanvasHandle>(null);
 
   function handleExportPNG() {
@@ -44,6 +45,18 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSnapEnabled(s => !s)}
+              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition ${
+                snapEnabled
+                  ? "border-blue-500/50 bg-blue-500/10 text-blue-400"
+                  : "border-neutral-800 bg-neutral-900 text-neutral-500 hover:text-neutral-300"
+              }`}
+              title={snapEnabled ? "Snap on (10px gap)" : "Snap off"}
+            >
+              <Magnet className="h-3.5 w-3.5" /> Snap
+            </button>
+            <div className="mx-1 h-5 w-px bg-neutral-800" />
             <button
               onClick={handleDelete}
               disabled={!selectedId}
@@ -97,6 +110,7 @@ export default function Home() {
             ref={canvasRef}
             items={items}
             selectedId={selectedId}
+            snapEnabled={snapEnabled}
             onSelect={setSelectedId}
             onChange={updateItem}
             onBringToFront={bringToFront}
