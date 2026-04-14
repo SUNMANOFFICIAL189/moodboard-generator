@@ -20,6 +20,7 @@ interface Props {
   onSelect: (id: string | null) => void;
   onChange: (id: string, patch: Partial<BoardItem>) => void;
   onBringToFront: (id: string) => void;
+  onDelete: (id: string) => void;
 }
 
 function snapToNeighbors(
@@ -95,7 +96,7 @@ function snapToNeighbors(
 }
 
 const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
-  { items, selectedId, snapEnabled, onSelect, onChange, onBringToFront },
+  { items, selectedId, snapEnabled, onSelect, onChange, onBringToFront, onDelete },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -113,6 +114,18 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.key === "Backspace" || e.key === "Delete") && selectedId) {
+        e.preventDefault();
+        onDelete(selectedId);
+        onSelect(null);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedId, onDelete, onSelect]);
 
   useImperativeHandle(ref, () => ({
     exportPNG: () => {
@@ -284,10 +297,6 @@ function BoardImage({
             rotation: node.rotation(),
           });
         }}
-        shadowColor="black"
-        shadowBlur={isSelected ? 20 : 10}
-        shadowOpacity={isSelected ? 0.4 : 0.15}
-        shadowOffset={{ x: 0, y: 4 }}
       />
       {isSelected && (
         <Transformer

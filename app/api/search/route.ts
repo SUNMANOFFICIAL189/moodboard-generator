@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const providers = Array.isArray(body.providers) && body.providers.length
     ? (body.providers as Provider[])
-    : (["unsplash", "pexels", "pixabay", "pinterest"] as Provider[]);
+    : (["unsplash", "pexels", "pixabay", "pinterest", "arena", "cosmos"] as Provider[]);
 
   if (!prompt) {
     return NextResponse.json({ error: "prompt required" }, { status: 400 });
@@ -40,6 +40,8 @@ export async function POST(req: NextRequest) {
       pexels: !process.env.PEXELS_API_KEY,
       pixabay: !process.env.PIXABAY_API_KEY,
       pinterest: false,
+      arena: false,
+      cosmos: false,
     },
   });
 }

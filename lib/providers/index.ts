@@ -3,10 +3,12 @@ import { searchUnsplash } from "./unsplash";
 import { searchPexels } from "./pexels";
 import { searchPixabay } from "./pixabay";
 import { searchPinterest } from "./pinterest";
+import { searchArena } from "./arena";
+import { searchCosmos } from "./cosmos";
 
 export async function searchAll(
   query: string,
-  providers: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest"],
+  providers: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest", "arena", "cosmos"],
   perPage = 12,
 ): Promise<ImageResult[]> {
   const jobs: Promise<ImageResult[]>[] = [];
@@ -14,6 +16,8 @@ export async function searchAll(
   if (providers.includes("pexels")) jobs.push(searchPexels(query, perPage));
   if (providers.includes("pixabay")) jobs.push(searchPixabay(query, perPage));
   if (providers.includes("pinterest")) jobs.push(searchPinterest(query, perPage));
+  if (providers.includes("arena")) jobs.push(searchArena(query, perPage));
+  if (providers.includes("cosmos")) jobs.push(searchCosmos(query, perPage));
 
   const settled = await Promise.allSettled(jobs);
   const results: ImageResult[] = [];

@@ -9,6 +9,9 @@ const ALLOWED_HOSTS = new Set([
   "pixabay.com",
   "cdn.pixabay.com",
   "i.pinimg.com",
+  "d2w9rnfcy7mm78.cloudfront.net",
+  "images.are.na",
+  "cdn.cosmos.so",
 ]);
 
 export async function GET(req: NextRequest) {

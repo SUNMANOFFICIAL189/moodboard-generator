@@ -114,6 +114,7 @@ export default function Home() {
             onSelect={setSelectedId}
             onChange={updateItem}
             onBringToFront={bringToFront}
+            onDelete={removeItem}
           />
         </div>
       </main>

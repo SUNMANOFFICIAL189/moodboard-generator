@@ -5,7 +5,7 @@ import type { ImageResult, Provider } from "@/lib/types";
 import { cn, proxied } from "@/lib/utils";
 import { Search, Plus, Loader2, ExternalLink, X } from "lucide-react";
 
-const ALL: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest"];
+const ALL: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest", "arena", "cosmos"];
 
 interface Props {
   onAdd: (img: ImageResult) => void;
@@ -83,7 +83,7 @@ export default function SearchPanel({ onAdd }: Props) {
                   : "border-neutral-800 bg-neutral-900 text-neutral-500 hover:text-neutral-300",
               )}
             >
-              {p}
+              {p === "arena" ? "are.na" : p === "cosmos" ? "cosmos.so" : p}
             </button>
           ))}
         </div>
