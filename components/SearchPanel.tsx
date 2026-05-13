@@ -151,7 +151,9 @@ export default function SearchPanel({ onAdd }: Props) {
     const ref: ReferenceImage = {
       id: uid(),
       kind: "result",
-      source: img.fullUrl,
+      // Use thumbUrl (typically <500KB) — full-res CDN images can exceed the
+      // 5MB Anthropic vision limit. Vibe is preserved at thumb resolution.
+      source: img.thumbUrl,
       thumbUrl: img.thumbUrl,
     };
     setReferences(prev => {

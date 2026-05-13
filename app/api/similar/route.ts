@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import { searchAll } from "@/lib/providers";
 import { extractVibe } from "@/lib/vision";
 import { hashBytes, combineHashes, vibe as vibeCache } from "@/lib/image-cache";
@@ -12,6 +13,11 @@ import type {
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+// Anthropic vision caps base64 image at 5MB. We resize anything over this
+// threshold (raw bytes, pre-base64) to a max dimension JPEG.
+const MAX_RAW_BYTES = 4 * 1024 * 1024;
+const RESIZE_MAX_DIM = 1568;
 
 const ALLOWED_HOSTS = new Set([
   "images.unsplash.com",
@@ -43,13 +49,26 @@ interface NormalisedImage {
   hash: string;
 }
 
+async function shrinkIfOversized(buf: Buffer): Promise<{ buf: Buffer; mediaType: string }> {
+  if (buf.byteLength <= MAX_RAW_BYTES) {
+    return { buf, mediaType: "image/jpeg" };
+  }
+  const out = await sharp(buf)
+    .rotate()
+    .resize(RESIZE_MAX_DIM, RESIZE_MAX_DIM, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 82 })
+    .toBuffer();
+  return { buf: out, mediaType: "image/jpeg" };
+}
+
 async function normaliseImage(input: SimilarSearchInput): Promise<NormalisedImage> {
   if (input.base64) {
     const bytes = Buffer.from(input.base64, "base64");
+    const { buf, mediaType } = await shrinkIfOversized(bytes);
     return {
-      base64: input.base64,
-      mediaType: input.mediaType ?? "image/jpeg",
-      hash: hashBytes(bytes),
+      base64: buf.toString("base64"),
+      mediaType: input.mediaType && buf === bytes ? input.mediaType : mediaType,
+      hash: hashBytes(buf),
     };
   }
   if (!input.url) throw new Error("image input requires url or base64");
@@ -66,11 +85,12 @@ async function normaliseImage(input: SimilarSearchInput): Promise<NormalisedImag
 
   const res = await fetch(parsed.toString());
   if (!res.ok) throw new Error(`upstream ${res.status} for ${parsed.hostname}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  const mediaType = res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
+  const fetched = Buffer.from(await res.arrayBuffer());
+  const upstreamMediaType = res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
+  const { buf, mediaType } = await shrinkIfOversized(fetched);
   return {
     base64: buf.toString("base64"),
-    mediaType,
+    mediaType: buf === fetched ? upstreamMediaType : mediaType,
     hash: hashBytes(buf),
   };
 }
