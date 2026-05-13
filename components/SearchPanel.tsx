@@ -221,8 +221,34 @@ export default function SearchPanel({ onAdd }: Props) {
   function handleDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragOver(false);
+
+    // Internal drag from a result card carries our own MIME type with the
+    // full ImageResult. Prefer it over file/URL paths.
+    const internal = e.dataTransfer.getData("application/x-moodboard-result");
+    if (internal) {
+      try {
+        const img = JSON.parse(internal) as ImageResult;
+        if (img && img.thumbUrl && img.provider) {
+          addReferenceFromResult(img);
+          return;
+        }
+      } catch {
+        // fall through to file/URL paths
+      }
+    }
+
     const file = e.dataTransfer.files[0];
-    if (file) addReferenceFromFile(file);
+    if (file) {
+      addReferenceFromFile(file);
+      return;
+    }
+
+    // Browser-provided URL drag (text/uri-list when dragging images from
+    // other tabs or apps).
+    const uri = e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain");
+    if (uri && uri.startsWith("http")) {
+      addReferenceFromUrl(uri.trim().split("\n")[0]);
+    }
   }
 
   function handleFileInput(e: ChangeEvent<HTMLInputElement>) {
@@ -439,14 +465,27 @@ function ResultCard({
   onAdd: (img: ImageResult) => void;
   onFindSimilar: () => void;
 }) {
+  function handleDragStart(e: DragEvent<HTMLDivElement>) {
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("application/x-moodboard-result", JSON.stringify(img));
+    // Best-effort drag preview so the user sees what they're dragging.
+    e.dataTransfer.setData("text/plain", img.thumbUrl);
+  }
+
   return (
-    <div className="group relative overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      className="group relative cursor-grab overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 active:cursor-grabbing"
+      title="Drag to vibe panel to find similar"
+    >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={proxied(img.thumbUrl)}
         alt={img.alt ?? ""}
         className="aspect-[4/3] w-full object-cover"
         loading="lazy"
+        draggable={false}
       />
       <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/80 via-transparent to-transparent p-2 opacity-0 transition group-hover:opacity-100">
         <div className="flex justify-end gap-1">
