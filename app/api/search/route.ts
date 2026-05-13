@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   const cacheKey = hashString(prompt.toLowerCase());
   let queries: string[] | undefined = expandCache.get(cacheKey);
   let expansionMethod: "haiku" | "rule-based" = "haiku";
-  let cached = !!queries;
+  const cached = !!queries;
 
   if (!queries) {
     try {
