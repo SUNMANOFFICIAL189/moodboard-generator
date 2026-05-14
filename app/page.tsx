@@ -122,7 +122,6 @@ export default function Home() {
         const positions = autoLayoutPositions(result.added, {
           startX: dropAtViewport?.x ?? 160,
           startY: dropAtViewport?.y ?? 160,
-          targetWidth: 200,
           gap: 10,
         });
         addImagesAt(
@@ -157,7 +156,6 @@ export default function Home() {
       const positions = autoLayoutPositions(imgs, {
         startX: 160,
         startY,
-        targetWidth: 200,
         gap: 10,
       });
       addImagesAt(

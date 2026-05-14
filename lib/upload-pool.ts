@@ -9,8 +9,9 @@ import { uid } from "./utils";
 
 const SOFT_CAP = 50;
 const HARD_CAP = 100;
-const MAX_BYTES = 25 * 1024 * 1024; // per-file
-const MAX_DIM = 1024;
+const MAX_BYTES = 25 * 1024 * 1024; // per-file source
+const MAX_DIM = 1568; // matches /api/similar server-side resize; stays under Anthropic 5MB cap
+const JPEG_QUALITY = 0.92;
 const PER_BATCH_TOAST_MS = 4500;
 
 export interface AddFilesResult {
@@ -213,7 +214,7 @@ async function fileToUpload(file: File): Promise<UploadedImage> {
   ctx.drawImage(bitmap, 0, 0, w, h);
 
   const blob = await new Promise<Blob | null>(resolve =>
-    canvas.toBlob(resolve, "image/jpeg", 0.85),
+    canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
   );
   if (!blob) throw new Error("encode failed");
 
@@ -261,7 +262,7 @@ export function autoLayoutPositions(
   sizes: Array<{ width: number; height: number }>,
   opts: AutoLayoutOptions,
 ): AutoLayoutPosition[] {
-  const targetWidth = opts.targetWidth ?? 200;
+  const targetWidth = opts.targetWidth ?? 260;
   const gap = opts.gap ?? 10;
   const columns = opts.columns ?? Math.max(1, Math.ceil(Math.sqrt(sizes.length)));
 

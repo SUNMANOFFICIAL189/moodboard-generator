@@ -9,11 +9,18 @@ import {
   DragEvent as ReactDragEvent,
 } from "react";
 import { Stage, Layer, Image as KImage, Transformer, Rect } from "react-konva";
+import KonvaLib from "konva";
 import type Konva from "konva";
 import useImage from "use-image";
 import type { BoardItem, UploadedImage } from "@/lib/types";
 import { proxied } from "@/lib/utils";
 import { extractFilesFromDataTransfer } from "@/lib/upload-pool";
+
+// Lock Konva to the device's pixel ratio so images stay sharp on Retina/high-DPI
+// displays regardless of any upstream globals that might have set it lower.
+if (typeof window !== "undefined") {
+  KonvaLib.pixelRatio = Math.max(window.devicePixelRatio || 1, 2);
+}
 
 const GAP = 10;
 
@@ -121,6 +128,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  const dragDepth = useRef(0);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
@@ -134,6 +142,22 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
+  }, []);
+
+  // Belt-and-braces clear: if a drag is cancelled outside the window or fires
+  // its native dragend somewhere else, dragenter/leave can leak. These window
+  // listeners reset the overlay on any terminal drag event.
+  useEffect(() => {
+    function clearOverlay() {
+      dragDepth.current = 0;
+      setDropActive(false);
+    }
+    window.addEventListener("dragend", clearOverlay);
+    window.addEventListener("drop", clearOverlay);
+    return () => {
+      window.removeEventListener("dragend", clearOverlay);
+      window.removeEventListener("drop", clearOverlay);
+    };
   }, []);
 
   useEffect(() => {
@@ -191,6 +215,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
 
   async function handleDrop(e: ReactDragEvent<HTMLDivElement>) {
     e.preventDefault();
+    dragDepth.current = 0;
     setDropActive(false);
 
     // Internal drag from upload panel → place at drop point.
@@ -223,12 +248,24 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
     if (!accepts) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragEnter(e: ReactDragEvent<HTMLDivElement>) {
+    const types = Array.from(e.dataTransfer.types);
+    const accepts =
+      types.includes("Files") ||
+      types.includes("application/x-moodboard-upload");
+    if (!accepts) return;
+    e.preventDefault();
+    dragDepth.current += 1;
     if (!dropActive) setDropActive(true);
   }
 
-  function handleDragLeave(e: ReactDragEvent<HTMLDivElement>) {
-    // Only flip off when leaving the container itself, not entering a child.
-    if (e.currentTarget === e.target) setDropActive(false);
+  function handleDragLeave() {
+    // Depth-counter pattern: dragenter on a child fires dragleave on the
+    // container, but increments depth back up. Only clear when depth hits 0.
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropActive(false);
   }
 
   const sorted = [...items].sort((a, b) => a.z - b.z);
@@ -238,6 +275,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
       ref={containerRef}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       className="relative h-full w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
       style={{
