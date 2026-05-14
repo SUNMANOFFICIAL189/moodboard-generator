@@ -17,6 +17,7 @@ import type {
   BoardItem,
   ClusterRequestItem,
   ClusterResponse,
+  ImageResult,
   UploadedImage,
   VibeCluster,
 } from "@/lib/types";
@@ -144,6 +145,35 @@ export default function Home() {
     [uploadPool, addImagesAt, showToast],
   );
 
+  // Batch-place: "Add all to canvas" from the My uploads tab or any results session.
+  // Starts below any existing items so nothing overlaps.
+  const handleSendAllToCanvas = useCallback(
+    (imgs: ImageResult[]) => {
+      if (imgs.length === 0) return;
+      const startY =
+        items.length > 0
+          ? Math.max(...items.map(it => it.y + it.height)) + 20
+          : 160;
+      const positions = autoLayoutPositions(imgs, {
+        startX: 160,
+        startY,
+        targetWidth: 200,
+        gap: 10,
+      });
+      addImagesAt(
+        imgs.map((image, i) => ({
+          image,
+          x: positions[i].x,
+          y: positions[i].y,
+          width: positions[i].width,
+          height: positions[i].height,
+        })),
+      );
+      showToast(`Added ${imgs.length} ${imgs.length === 1 ? "image" : "images"} to canvas`);
+    },
+    [items, addImagesAt, showToast],
+  );
+
   // Drag an upload thumbnail from panel onto canvas → place at drop point.
   const handleCanvasUploadDropped = useCallback(
     (upload: UploadedImage, dropAtViewport: { x: number; y: number }) => {
@@ -240,6 +270,7 @@ export default function Home() {
           onUploadAddToCanvas={upload =>
             handleCanvasUploadDropped(upload, { x: 160, y: 160 })
           }
+          onSendAllToCanvas={handleSendAllToCanvas}
         />
       </aside>
 

@@ -45,9 +45,15 @@ interface Props {
   onAdd: (img: ImageResult) => void;
   uploadPool: UploadPool;
   onUploadAddToCanvas: (upload: UploadedImage) => void;
+  onSendAllToCanvas: (imgs: ImageResult[]) => void;
 }
 
-export default function SearchPanel({ onAdd, uploadPool, onUploadAddToCanvas }: Props) {
+export default function SearchPanel({
+  onAdd,
+  uploadPool,
+  onUploadAddToCanvas,
+  onSendAllToCanvas,
+}: Props) {
   const [prompt, setPrompt] = useState("");
   const [keywordLoading, setKeywordLoading] = useState(false);
   const [vibeLoading, setVibeLoading] = useState(false);
@@ -549,6 +555,9 @@ export default function SearchPanel({ onAdd, uploadPool, onUploadAddToCanvas }: 
             onPickFiles={() => batchInputRef.current?.click()}
             onPickFolder={() => folderInputRef.current?.click()}
             onAdd={u => onUploadAddToCanvas(u)}
+            onAddAll={uploads =>
+              onSendAllToCanvas(uploads.map(uploadToImageResult))
+            }
             onFindSimilar={findSimilarForUpload}
             onRemove={uploadPool.removeUpload}
             onClearAll={uploadPool.clearUploads}
@@ -560,7 +569,21 @@ export default function SearchPanel({ onAdd, uploadPool, onUploadAddToCanvas }: 
             )}
 
             {activeSession && (
-              <div className="mb-2 text-xs text-neutral-400">{activeSession.results.length} results</div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs text-neutral-400">
+                  {activeSession.results.length} results
+                </span>
+                {activeSession.results.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onSendAllToCanvas(activeSession.results)}
+                    className="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-[10px] text-neutral-200 transition hover:border-neutral-600 hover:bg-neutral-700"
+                    title="Add every result in this session to the canvas"
+                  >
+                    <Plus className="h-3 w-3" /> Add all ({activeSession.results.length})
+                  </button>
+                )}
+              </div>
             )}
 
             {allMissing && (
@@ -853,6 +876,7 @@ function UploadsView({
   onPickFiles,
   onPickFolder,
   onAdd,
+  onAddAll,
   onFindSimilar,
   onRemove,
   onClearAll,
@@ -866,6 +890,7 @@ function UploadsView({
   onPickFiles: () => void;
   onPickFolder: () => void;
   onAdd: (u: UploadedImage) => void;
+  onAddAll: (uploads: UploadedImage[]) => void;
   onFindSimilar: (u: UploadedImage) => void;
   onRemove: (id: string) => void;
   onClearAll: () => void;
@@ -905,6 +930,17 @@ function UploadsView({
           </button>
         )}
       </div>
+
+      {uploads.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onAddAll(uploads)}
+          className="flex w-full items-center justify-center gap-1.5 rounded-md bg-white px-3 py-2 text-xs font-medium text-neutral-950 transition hover:bg-neutral-200"
+          title="Place every upload on the canvas in a grid"
+        >
+          <Plus className="h-3.5 w-3.5" /> Add all {uploads.length} to canvas
+        </button>
+      )}
 
       {loading && (
         <div className="flex items-center gap-2 text-[11px] text-neutral-400">
