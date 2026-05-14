@@ -5,9 +5,15 @@ import type { BoardItem, ImageResult } from "./types";
 import { uid } from "./utils";
 
 const STORAGE_KEY = "moodboard:v1";
+const HISTORY_CAP = 30;
 
 interface BoardState {
   items: BoardItem[];
+}
+
+interface Snapshot {
+  items: BoardItem[];
+  rejected: BoardItem[];
 }
 
 function load(): BoardState {
@@ -31,11 +37,34 @@ export function useBoard() {
   const [rejected, setRejected] = useState<BoardItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
-  // Ref mirror for reading latest state inside callbacks without re-binding.
+  // Refs mirror state so callbacks read current values without re-binding,
+  // and history snapshots can be taken synchronously.
   const itemsRef = useRef<BoardItem[]>([]);
+  const rejectedRef = useRef<BoardItem[]>([]);
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  useEffect(() => {
+    rejectedRef.current = rejected;
+  }, [rejected]);
+
+  // Undo / redo stacks. Bounded — old snapshots fall off the back.
+  const past = useRef<Snapshot[]>([]);
+  const future = useRef<Snapshot[]>([]);
+  // Depth state so consumers can reactively disable Undo/Redo buttons.
+  const [historyDepth, setHistoryDepth] = useState(0);
+  const [futureDepth, setFutureDepth] = useState(0);
+
+  function pushHistory() {
+    past.current.push({
+      items: itemsRef.current,
+      rejected: rejectedRef.current,
+    });
+    if (past.current.length > HISTORY_CAP) past.current.shift();
+    future.current = []; // any new action invalidates redo
+    setHistoryDepth(past.current.length);
+    setFutureDepth(0);
+  }
 
   useEffect(() => {
     setItems(load().items);
@@ -49,6 +78,7 @@ export function useBoard() {
   // Rejected items are NOT persisted — they're a per-session soft-delete bin.
 
   const addImage = useCallback((image: ImageResult) => {
+    pushHistory();
     setItems(prev => {
       const maxZ = prev.reduce((m, it) => Math.max(m, it.z), 0);
       const aspect = image.width / image.height || 1;
@@ -68,8 +98,6 @@ export function useBoard() {
     });
   }, []);
 
-  // Batch placement with pre-computed positions (used by Mode A auto-layout
-  // when files are dropped directly onto the canvas).
   const addImagesAt = useCallback(
     (
       placements: Array<{
@@ -80,6 +108,8 @@ export function useBoard() {
         height: number;
       }>,
     ) => {
+      if (placements.length === 0) return;
+      pushHistory();
       setItems(prev => {
         const startZ = prev.reduce((m, it) => Math.max(m, it.z), 0);
         const newItems: BoardItem[] = placements.map((p, i) => ({
@@ -98,14 +128,18 @@ export function useBoard() {
     [],
   );
 
+  // Continuous edits (drag/resize) — NOT snapshotted to avoid flooding
+  // history. User can undo a discrete add/delete instead.
   const updateItem = useCallback((id: string, patch: Partial<BoardItem>) => {
     setItems(prev => prev.map(it => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
 
   const removeItem = useCallback((id: string) => {
+    pushHistory();
     setItems(prev => prev.filter(it => it.id !== id));
   }, []);
 
+  // Bringing to front is high-frequency (every click). Not snapshotted.
   const bringToFront = useCallback((id: string) => {
     setItems(prev => {
       const maxZ = prev.reduce((m, it) => Math.max(m, it.z), 0);
@@ -113,12 +147,16 @@ export function useBoard() {
     });
   }, []);
 
-  const clear = useCallback(() => setItems([]), []);
+  const clear = useCallback(() => {
+    pushHistory();
+    setItems([]);
+  }, []);
 
   // ─── Refine: soft-reject items into a recoverable tray ────────────────────
 
   const rejectItems = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
+    pushHistory();
     const idSet = new Set(ids);
     const current = itemsRef.current;
     const toReject = current.filter(it => idSet.has(it.id));
@@ -132,6 +170,7 @@ export function useBoard() {
   }, []);
 
   const restoreFromRejected = useCallback((id: string) => {
+    pushHistory();
     setRejected(prev => {
       const found = prev.find(r => r.id === id);
       if (!found) return prev;
@@ -143,7 +182,73 @@ export function useBoard() {
     });
   }, []);
 
-  const clearRejected = useCallback(() => setRejected([]), []);
+  const clearRejected = useCallback(() => {
+    pushHistory();
+    setRejected([]);
+  }, []);
+
+  // Combined refine action: reject discarded clusters AND rearrange remaining
+  // items by the supplied positions, all in a single undoable snapshot.
+  const applyRefineResult = useCallback(
+    (
+      rejectIds: string[],
+      positions: Record<string, { x: number; y: number; width: number; height: number }>,
+    ) => {
+      pushHistory();
+      const rejectSet = new Set(rejectIds);
+      const current = itemsRef.current;
+      const toReject = current.filter(it => rejectSet.has(it.id));
+      const remaining = current.filter(it => !rejectSet.has(it.id));
+
+      // Apply positions to whichever items have a placement; leave others as-is.
+      const repositioned = remaining.map(it => {
+        const p = positions[it.id];
+        return p ? { ...it, x: p.x, y: p.y, width: p.width, height: p.height } : it;
+      });
+      setItems(repositioned);
+
+      if (toReject.length > 0) {
+        setRejected(prev => {
+          const existing = new Set(prev.map(r => r.id));
+          const fresh = toReject.filter(r => !existing.has(r.id));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
+      }
+    },
+    [],
+  );
+
+  // ─── Undo / Redo ──────────────────────────────────────────────────────────
+
+  const undo = useCallback(() => {
+    const prev = past.current.pop();
+    if (!prev) return false;
+    future.current.push({
+      items: itemsRef.current,
+      rejected: rejectedRef.current,
+    });
+    if (future.current.length > HISTORY_CAP) future.current.shift();
+    setItems(prev.items);
+    setRejected(prev.rejected);
+    setHistoryDepth(past.current.length);
+    setFutureDepth(future.current.length);
+    return true;
+  }, []);
+
+  const redo = useCallback(() => {
+    const next = future.current.pop();
+    if (!next) return false;
+    past.current.push({
+      items: itemsRef.current,
+      rejected: rejectedRef.current,
+    });
+    if (past.current.length > HISTORY_CAP) past.current.shift();
+    setItems(next.items);
+    setRejected(next.rejected);
+    setHistoryDepth(past.current.length);
+    setFutureDepth(future.current.length);
+    return true;
+  }, []);
 
   return {
     items,
@@ -158,5 +263,10 @@ export function useBoard() {
     rejectItems,
     restoreFromRejected,
     clearRejected,
+    applyRefineResult,
+    undo,
+    redo,
+    canUndo: historyDepth > 0,
+    canRedo: futureDepth > 0,
   };
 }

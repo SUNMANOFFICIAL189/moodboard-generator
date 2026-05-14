@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import SearchPanel from "@/components/SearchPanel";
 import RefineModal from "@/components/RefineModal";
 import RejectedTray from "@/components/RejectedTray";
@@ -11,6 +11,7 @@ import {
   uploadToImageResult,
   autoLayoutPositions,
 } from "@/lib/upload-pool";
+import { clusterLayoutPositions } from "@/lib/cluster-layout";
 import { exportZip, exportCanvasPNG } from "@/lib/export";
 import type { CanvasHandle } from "@/components/Canvas";
 import type {
@@ -28,6 +29,8 @@ import {
   Sparkles,
   Magnet,
   Wand2,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 const Canvas = dynamic(() => import("@/components/Canvas"), { ssr: false });
@@ -89,9 +92,13 @@ export default function Home() {
     removeItem,
     bringToFront,
     clear,
-    rejectItems,
     restoreFromRejected,
     clearRejected,
+    applyRefineResult,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   } = useBoard();
   const uploadPool = useUploadPool();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -112,6 +119,34 @@ export default function Home() {
     },
     [uploadPool.toastMs],
   );
+
+  // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo.
+  // Skipped when focus is in an editable element so native undo on the prompt
+  // textarea / inputs still works.
+  useEffect(() => {
+    function isEditable(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        target.isContentEditable
+      );
+    }
+    function onKey(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key.toLowerCase() !== "z") return;
+      if (isEditable(e.target)) return;
+      e.preventDefault();
+      if (e.shiftKey) {
+        if (redo()) showToast("Redone");
+      } else {
+        if (undo()) showToast("Undone");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo, showToast]);
 
   // Mode A: drop files directly on canvas → add to pool + auto-layout onto board.
   const handleCanvasFilesDropped = useCallback(
@@ -244,18 +279,31 @@ export default function Home() {
     }
   }
 
-  function confirmKeep(keepClusterIds: string[]) {
+  function confirmCluster(keepClusterIds: string[]) {
     const keepSet = new Set(keepClusterIds);
+    const keptClusters = clusters.filter(c => keepSet.has(c.id));
     const toReject: string[] = [];
     for (const c of clusters) {
       if (!keepSet.has(c.id)) toReject.push(...c.itemIds);
     }
-    if (toReject.length > 0) {
-      rejectItems(toReject);
-      showToast(
-        `Moved ${toReject.length} ${toReject.length === 1 ? "image" : "images"} to Rejected`,
-      );
-    }
+
+    const itemsById = new Map(items.map(it => [it.id, it]));
+    const positions = clusterLayoutPositions(keptClusters, itemsById, {
+      startX: 160,
+      startY: 160,
+      targetWidth: 240,
+      intraGap: 10,
+      interGap: 80,
+    });
+
+    applyRefineResult(toReject, positions);
+
+    const kept = keptClusters.reduce((n, c) => n + c.itemIds.length, 0);
+    const parts: string[] = [];
+    if (kept > 0) parts.push(`Clustered ${kept}`);
+    if (toReject.length > 0) parts.push(`moved ${toReject.length} to Rejected`);
+    if (parts.length > 0) showToast(parts.join(" · "));
+
     setRefineOpen(false);
   }
 
@@ -294,6 +342,27 @@ export default function Home() {
               }
             >
               <Wand2 className="h-3.5 w-3.5" /> Refine vibe
+            </button>
+            <div className="mx-1 h-5 w-px bg-neutral-800" />
+            <button
+              onClick={() => {
+                if (undo()) showToast("Undone");
+              }}
+              disabled={!canUndo}
+              className="rounded-md border border-neutral-800 bg-neutral-900 p-1.5 text-neutral-300 transition hover:border-neutral-700 hover:text-white disabled:opacity-30"
+              title="Undo (⌘Z)"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => {
+                if (redo()) showToast("Redone");
+              }}
+              disabled={!canRedo}
+              className="rounded-md border border-neutral-800 bg-neutral-900 p-1.5 text-neutral-300 transition hover:border-neutral-700 hover:text-white disabled:opacity-30"
+              title="Redo (⇧⌘Z)"
+            >
+              <Redo2 className="h-3.5 w-3.5" />
             </button>
             <div className="mx-1 h-5 w-px bg-neutral-800" />
             <button
@@ -396,7 +465,7 @@ export default function Home() {
         items={items}
         errorMessage={refineError}
         onConfirmCost={confirmCostAndRun}
-        onConfirmKeep={confirmKeep}
+        onConfirmKeep={confirmCluster}
         onClose={closeRefine}
       />
     </div>

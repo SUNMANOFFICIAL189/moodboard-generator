@@ -166,8 +166,13 @@ export default function RefineModal({
 
             <footer className="flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-950 px-5 py-3">
               <p className="text-[11px] text-neutral-500">
-                Keep <strong className="text-neutral-200">{keepCount}</strong> · Move{" "}
-                <strong className="text-neutral-200">{discardCount}</strong> to Rejected
+                Rearrange <strong className="text-neutral-200">{keepCount}</strong> on canvas
+                {discardCount > 0 && (
+                  <>
+                    {" "}
+                    · Move <strong className="text-neutral-200">{discardCount}</strong> to Rejected
+                  </>
+                )}
               </p>
               <div className="flex gap-2">
                 <button
@@ -180,10 +185,11 @@ export default function RefineModal({
                   onClick={() =>
                     onConfirmKeep(clusters.filter(c => keep[c.id] ?? true).map(c => c.id))
                   }
-                  disabled={discardCount === 0 && keepCount === itemCount}
-                  className="rounded-md bg-white px-4 py-2 text-xs font-medium text-neutral-950 transition hover:bg-neutral-200 disabled:opacity-40"
+                  disabled={keepCount === 0}
+                  className="flex items-center gap-1.5 rounded-md bg-violet-500 px-4 py-2 text-xs font-medium text-white transition hover:bg-violet-400 disabled:opacity-40"
                 >
-                  Apply
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Cluster on canvas
                 </button>
               </div>
             </footer>
