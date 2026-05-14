@@ -28,12 +28,12 @@ export function useUploadPool() {
     ref.current = uploads;
   }, [uploads]);
 
-  // Revoke all blob URLs on unmount.
-  useEffect(() => {
-    return () => {
-      for (const u of ref.current) URL.revokeObjectURL(u.blobUrl);
-    };
-  }, []);
+  // NOTE: we deliberately do NOT revoke blob URLs on unmount.
+  // React StrictMode double-invokes mount/unmount in dev, which would revoke
+  // URLs that the still-live state references — making canvas images load as
+  // dead links. Browsers GC blob URLs when the page/tab is closed, which is
+  // good enough for session-only storage. URLs are still revoked explicitly
+  // in removeUpload and clearUploads.
 
   const addFiles = useCallback(async (files: File[]): Promise<AddFilesResult> => {
     const skipped: { filename: string; reason: string }[] = [];
