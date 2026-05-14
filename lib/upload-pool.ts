@@ -91,19 +91,18 @@ export function useUploadPool() {
     return { added, skipped };
   }, []);
 
+  // NOTE: we deliberately do NOT revoke blob URLs on remove/clear either.
+  // Canvas items may still reference these URLs — revoking them here breaks
+  // anything that re-reads the bytes later (Refine cluster, Find similar from
+  // a canvas item, etc.). The user expects the pool to be a UI tray, not a
+  // memory manager. Blob URLs live until the tab closes; the browser GCs them
+  // at that point. Memory cost: ~150-500KB per upload × ~100 max = ~50MB tops.
   const removeUpload = useCallback((id: string) => {
-    setUploads(prev => {
-      const target = prev.find(u => u.id === id);
-      if (target) URL.revokeObjectURL(target.blobUrl);
-      return prev.filter(u => u.id !== id);
-    });
+    setUploads(prev => prev.filter(u => u.id !== id));
   }, []);
 
   const clearUploads = useCallback(() => {
-    setUploads(prev => {
-      for (const u of prev) URL.revokeObjectURL(u.blobUrl);
-      return [];
-    });
+    setUploads([]);
   }, []);
 
   return {

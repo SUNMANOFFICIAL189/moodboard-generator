@@ -71,16 +71,24 @@ async function blobUrlToBase64(blobUrl: string): Promise<string> {
 
 async function prepareClusterPayload(
   items: BoardItem[],
-): Promise<ClusterRequestItem[]> {
-  return Promise.all(
-    items.map(async it => {
+): Promise<{ payload: ClusterRequestItem[]; skipped: number }> {
+  const results = await Promise.all(
+    items.map(async (it): Promise<ClusterRequestItem | null> => {
       if (it.image.provider === "upload") {
-        const base64 = await blobUrlToBase64(it.image.fullUrl);
-        return { id: it.id, base64, mediaType: "image/jpeg" };
+        try {
+          const base64 = await blobUrlToBase64(it.image.fullUrl);
+          return { id: it.id, base64, mediaType: "image/jpeg" };
+        } catch {
+          // Blob URL is dead (revoked or never valid). Skip silently rather
+          // than failing the entire batch.
+          return null;
+        }
       }
       return { id: it.id, url: it.image.thumbUrl };
     }),
   );
+  const payload = results.filter((x): x is ClusterRequestItem => x !== null);
+  return { payload, skipped: results.length - payload.length };
 }
 
 export default function Home() {
@@ -299,7 +307,14 @@ export default function Home() {
     setRefineStage("loading");
     setRefineError(null);
     try {
-      const payload = await prepareClusterPayload(items);
+      const { payload, skipped } = await prepareClusterPayload(items);
+      if (payload.length < 2) {
+        throw new Error(
+          skipped > 0
+            ? `Couldn't read ${skipped} uploaded images (they may have been cleared from the My uploads tab). Re-upload and try again.`
+            : "Need at least 2 images to cluster.",
+        );
+      }
       const res = await fetch("/api/cluster", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -314,9 +329,17 @@ export default function Home() {
         throw new Error("Haiku returned no clusters — try again");
       }
       setClusters(data.clusters);
+      if (skipped > 0) {
+        showToast(`Skipped ${skipped} unreadable uploads`);
+      }
       setRefineStage("result");
     } catch (err) {
-      setRefineError(err instanceof Error ? err.message : "Cluster failed");
+      let msg = err instanceof Error ? err.message : "Cluster failed";
+      if (msg === "Failed to fetch") {
+        msg =
+          "Couldn't reach the cluster service — the request may be too large or a network hiccup. Try fewer images or check the dev server.";
+      }
+      setRefineError(msg);
       setRefineStage("error");
     }
   }
