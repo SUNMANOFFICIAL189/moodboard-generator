@@ -13,7 +13,7 @@ import {
 } from "@/lib/upload-pool";
 import { clusterLayoutPositions } from "@/lib/cluster-layout";
 import { exportZip, exportCanvasPNG } from "@/lib/export";
-import type { CanvasHandle } from "@/components/Canvas";
+import type { CanvasHandle, Tool } from "@/components/Canvas";
 import type {
   BoardItem,
   ClusterRequestItem,
@@ -31,6 +31,8 @@ import {
   Wand2,
   Undo2,
   Redo2,
+  MousePointer2,
+  Hand,
 } from "lucide-react";
 
 const Canvas = dynamic(() => import("@/components/Canvas"), { ssr: false });
@@ -89,7 +91,9 @@ export default function Home() {
     addImage,
     addImagesAt,
     updateItem,
+    updateItems,
     removeItem,
+    removeItems,
     bringToFront,
     clear,
     restoreFromRejected,
@@ -101,7 +105,9 @@ export default function Home() {
     canRedo,
   } = useBoard();
   const uploadPool = useUploadPool();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [tool, setTool] = useState<Tool>("select");
+  const [spaceHeld, setSpaceHeld] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const canvasRef = useRef<CanvasHandle>(null);
@@ -120,23 +126,18 @@ export default function Home() {
     [uploadPool.toastMs],
   );
 
+  function isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    const tag = target.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
+  }
+
   // Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo.
-  // Skipped when focus is in an editable element so native undo on the prompt
-  // textarea / inputs still works.
   useEffect(() => {
-    function isEditable(target: EventTarget | null): boolean {
-      if (!(target instanceof HTMLElement)) return false;
-      const tag = target.tagName;
-      return (
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        target.isContentEditable
-      );
-    }
     function onKey(e: KeyboardEvent) {
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key.toLowerCase() !== "z") return;
-      if (isEditable(e.target)) return;
+      if (isEditableTarget(e.target)) return;
       e.preventDefault();
       if (e.shiftKey) {
         if (redo()) showToast("Redone");
@@ -147,6 +148,42 @@ export default function Home() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo, showToast]);
+
+  // V = Select tool, H = Pan tool, Space (hold) = transient pan.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (isEditableTarget(e.target)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "v") {
+        e.preventDefault();
+        setTool("select");
+      } else if (key === "h") {
+        e.preventDefault();
+        setTool("pan");
+      } else if (e.code === "Space") {
+        e.preventDefault();
+        setSpaceHeld(true);
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === "Space") {
+        setSpaceHeld(false);
+      }
+    }
+    function onBlur() {
+      // Window blur can swallow keyup — release space defensively.
+      setSpaceHeld(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   // Mode A: drop files directly on canvas → add to pool + auto-layout onto board.
   const handleCanvasFilesDropped = useCallback(
@@ -235,10 +272,9 @@ export default function Home() {
   }
 
   function handleDelete() {
-    if (selectedId) {
-      removeItem(selectedId);
-      setSelectedId(null);
-    }
+    if (selectedIds.size === 0) return;
+    removeItems(Array.from(selectedIds));
+    setSelectedIds(new Set());
   }
 
   function openRefine() {
@@ -331,6 +367,31 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-0.5">
+              <button
+                onClick={() => setTool("select")}
+                className={`flex items-center gap-1 rounded p-1 transition ${
+                  tool === "select" && !spaceHeld
+                    ? "bg-neutral-700 text-white"
+                    : "text-neutral-400 hover:text-white"
+                }`}
+                title="Select tool (V) — drag to lasso, Cmd-click to add"
+              >
+                <MousePointer2 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setTool("pan")}
+                className={`flex items-center gap-1 rounded p-1 transition ${
+                  tool === "pan" || spaceHeld
+                    ? "bg-neutral-700 text-white"
+                    : "text-neutral-400 hover:text-white"
+                }`}
+                title="Pan tool (H, or hold Space) — drag to pan the canvas"
+              >
+                <Hand className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="mx-1 h-5 w-px bg-neutral-800" />
             <button
               onClick={openRefine}
               disabled={items.length < 2}
@@ -379,16 +440,22 @@ export default function Home() {
             <div className="mx-1 h-5 w-px bg-neutral-800" />
             <button
               onClick={handleDelete}
-              disabled={!selectedId}
+              disabled={selectedIds.size === 0}
               className="flex items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300 transition hover:border-neutral-700 hover:text-white disabled:opacity-30"
+              title={
+                selectedIds.size === 0
+                  ? "Select images first (click or lasso)"
+                  : `Delete ${selectedIds.size} selected (Backspace)`
+              }
             >
-              <Trash2 className="h-3.5 w-3.5" /> Delete
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete{selectedIds.size > 1 ? ` (${selectedIds.size})` : ""}
             </button>
             <button
               onClick={() => {
                 if (confirm("Clear the whole board?")) {
                   clear();
-                  setSelectedId(null);
+                  setSelectedIds(new Set());
                 }
               }}
               disabled={items.length === 0}
@@ -431,10 +498,13 @@ export default function Home() {
           <Canvas
             ref={canvasRef}
             items={items}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
+            tool={tool}
+            spaceHeld={spaceHeld}
             snapEnabled={snapEnabled}
-            onSelect={setSelectedId}
+            onSelectionChange={setSelectedIds}
             onChange={updateItem}
+            onChangeMany={updateItems}
             onBringToFront={bringToFront}
             onDelete={removeItem}
             onFilesDropped={handleCanvasFilesDropped}

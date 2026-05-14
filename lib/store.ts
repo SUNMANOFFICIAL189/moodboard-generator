@@ -134,9 +134,33 @@ export function useBoard() {
     setItems(prev => prev.map(it => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
 
+  // Batch update — used when committing a multi-drag so all moved items
+  // change in one React commit and one history snapshot covers them all.
+  const updateItems = useCallback(
+    (updates: Array<{ id: string; patch: Partial<BoardItem> }>) => {
+      if (updates.length === 0) return;
+      pushHistory();
+      const byId = new Map(updates.map(u => [u.id, u.patch]));
+      setItems(prev =>
+        prev.map(it => {
+          const patch = byId.get(it.id);
+          return patch ? { ...it, ...patch } : it;
+        }),
+      );
+    },
+    [],
+  );
+
   const removeItem = useCallback((id: string) => {
     pushHistory();
     setItems(prev => prev.filter(it => it.id !== id));
+  }, []);
+
+  const removeItems = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    pushHistory();
+    const idSet = new Set(ids);
+    setItems(prev => prev.filter(it => !idSet.has(it.id)));
   }, []);
 
   // Bringing to front is high-frequency (every click). Not snapshotted.
@@ -257,7 +281,9 @@ export function useBoard() {
     addImage,
     addImagesAt,
     updateItem,
+    updateItems,
     removeItem,
+    removeItems,
     bringToFront,
     clear,
     rejectItems,
