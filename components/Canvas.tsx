@@ -9,18 +9,11 @@ import {
   DragEvent as ReactDragEvent,
 } from "react";
 import { Stage, Layer, Image as KImage, Transformer, Rect } from "react-konva";
-import KonvaLib from "konva";
 import type Konva from "konva";
 import useImage from "use-image";
 import type { BoardItem, UploadedImage } from "@/lib/types";
 import { proxied } from "@/lib/utils";
 import { extractFilesFromDataTransfer } from "@/lib/upload-pool";
-
-// Lock Konva to the device's pixel ratio so images stay sharp on Retina/high-DPI
-// displays regardless of any upstream globals that might have set it lower.
-if (typeof window !== "undefined") {
-  KonvaLib.pixelRatio = Math.max(window.devicePixelRatio || 1, 2);
-}
 
 const GAP = 10;
 
@@ -354,7 +347,13 @@ function BoardImage({
   onSelect: () => void;
   onChange: (patch: Partial<BoardItem>) => void;
 }) {
-  const [img] = useImage(proxied(item.image.fullUrl), "anonymous");
+  // Blob and data URLs are same-origin and don't need (or accept) CORS.
+  // Setting crossOrigin="anonymous" on them taints the image in Chrome and
+  // causes useImage to silently never return a loaded image — the KImage
+  // then renders blank while the Transformer/selection box still shows.
+  const src = proxied(item.image.fullUrl);
+  const needsCors = !(src.startsWith("blob:") || src.startsWith("data:"));
+  const [img] = useImage(src, needsCors ? "anonymous" : undefined);
   const shapeRef = useRef<Konva.Image>(null);
   const trRef = useRef<Konva.Transformer>(null);
 
