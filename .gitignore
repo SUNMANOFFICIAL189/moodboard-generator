@@ -43,3 +43,9 @@ _TERMINAL_SCRIPT/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local auto-tooling (claude-mem / MemPalace per-project artefacts)
+entities.json
+mempalace.yaml
+.code-review-graph/
+graphify-out/
