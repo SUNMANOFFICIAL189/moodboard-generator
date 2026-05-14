@@ -141,14 +141,25 @@ export default function SearchPanel({
     setVibeLoading(true);
     setError(null);
     try {
-      const inputs: SimilarSearchInput[] = references.map(ref => {
-        if (ref.kind === "upload") {
-          const [meta, data] = ref.source.split(",", 2);
-          const mediaType = meta.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
-          return { base64: data ?? ref.source, mediaType };
-        }
-        return { url: ref.source };
-      });
+      // Resolve each reference's source by URL scheme.
+      // - data:        already base64 — split off the prefix
+      // - blob:        local browser URL — fetch into base64 client-side
+      //                (the server can neither allowlist nor fetch a blob URL)
+      // - http(s)://   pass as-is, server fetches with host allowlist
+      const inputs: SimilarSearchInput[] = await Promise.all(
+        references.map(async (ref): Promise<SimilarSearchInput> => {
+          if (ref.source.startsWith("data:")) {
+            const [meta, data] = ref.source.split(",", 2);
+            const mediaType = meta.match(/data:([^;]+)/)?.[1] ?? "image/jpeg";
+            return { base64: data ?? ref.source, mediaType };
+          }
+          if (ref.source.startsWith("blob:")) {
+            const base64 = await blobUrlToBase64(ref.source);
+            return { base64, mediaType: "image/jpeg" };
+          }
+          return { url: ref.source };
+        }),
+      );
       const res = await fetch("/api/similar", {
         method: "POST",
         headers: { "content-type": "application/json" },
