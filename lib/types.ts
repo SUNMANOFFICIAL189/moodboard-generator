@@ -109,3 +109,27 @@ export interface UploadedImage {
   bytes: number;
   addedAt: number;
 }
+
+// ─── Refine: cluster the board into 2-3 vibe groups ──────────────────────────
+
+export interface VibeCluster {
+  id: string;
+  label: string;       // short e.g. "moody cinematic"
+  summary: string;     // one-sentence description
+  itemIds: string[];   // BoardItem ids that belong here
+}
+
+export interface ClusterRequestItem {
+  id: string;          // BoardItem id
+  url?: string;        // for provider images served from CDN
+  base64?: string;     // for uploads (blob:/data: URLs cannot be fetched server-side)
+  mediaType?: string;
+}
+
+export interface ClusterRequest {
+  items: ClusterRequestItem[];
+}
+
+export interface ClusterResponse {
+  clusters: VibeCluster[];
+}

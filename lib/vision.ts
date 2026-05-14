@@ -1,10 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import type { VibePayload, SimilarSearchInput } from "./types";
+import type { VibePayload, SimilarSearchInput, VibeCluster } from "./types";
 
 const MODEL = "claude-haiku-4-5-20251001";
 const VIBE_MAX_TOKENS = 1024;
 const EXPAND_MAX_TOKENS = 512;
+const CLUSTER_MAX_TOKENS = 1024;
+const MAX_CLUSTER_IMAGES = 50;
 
 const VIBE_DOMAIN = z.enum([
   "architecture",
@@ -225,6 +227,151 @@ export async function extractVibe(images: SimilarSearchInput[]): Promise<VibePay
     return await run();
   } catch (err) {
     // One retry — schema-validation errors usually resolve on the second pass.
+    if (err instanceof z.ZodError) return await run();
+    throw err;
+  }
+}
+
+// ─── Cluster N board images into 2-3 vibe groups ─────────────────────────────
+
+const CLUSTER_TOOL = {
+  name: "cluster_by_vibe",
+  description:
+    "Group the provided images into 2 or 3 visually coherent clusters by mood, style, and palette.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      clusters: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            label: {
+              type: "string",
+              description:
+                "Short cluster name, 2-4 words. e.g. 'moody cinematic', 'bright graphic', 'cosmic abstract'.",
+            },
+            summary: {
+              type: "string",
+              description:
+                "One sentence (max 200 chars) describing the cluster's shared vibe in plain English.",
+            },
+            image_indices: {
+              type: "array",
+              items: { type: "integer" },
+              description:
+                "1-based indices of images that belong to this cluster (1..N). Every image must appear in exactly one cluster.",
+            },
+          },
+          required: ["label", "summary", "image_indices"],
+        },
+      },
+    },
+    required: ["clusters"],
+  },
+};
+
+const ClusterPayloadSchema = z.object({
+  clusters: z
+    .array(
+      z.object({
+        label: z.string().min(1).max(60),
+        summary: z.string().min(1).max(200),
+        image_indices: z.array(z.number().int().positive()).min(1),
+      }),
+    )
+    .min(1)
+    .max(3),
+});
+
+const CLUSTER_SYSTEM_PROMPT = `You are an art director sorting reference images for a moodboard. The user has dropped a pile of images onto the board and wants you to group them by visual vibe so they can keep the clusters that fit and discard the rest.
+
+CRITICAL RULES:
+1. Produce between 2 and 3 clusters. Use 2 when the pile is clearly two-toned; use 3 only when a distinct third vibe is unmistakable. Never produce just 1 cluster unless the pile is genuinely a single vibe.
+2. Every image must appear in exactly ONE cluster — no duplicates, no omissions.
+3. Cluster by MOOD + PALETTE + STYLE, not by literal subject. A photo of a brutalist building and a moody portrait can share the same cluster if their mood/palette align.
+4. Label each cluster with 2-4 plain English words. Avoid generic words like "miscellaneous", "other", "various".
+5. Image indices are 1-based, in the order the images were provided.
+6. Summary is one short sentence the user reads to decide whether to keep this cluster.`;
+
+export async function clusterByVibe(
+  images: SimilarSearchInput[],
+  itemIds: string[],
+): Promise<VibeCluster[]> {
+  if (images.length !== itemIds.length) {
+    throw new Error("clusterByVibe: images and itemIds length mismatch");
+  }
+  if (images.length < 2) {
+    throw new Error("clusterByVibe: need at least 2 images");
+  }
+  if (images.length > MAX_CLUSTER_IMAGES) {
+    throw new Error(`clusterByVibe: max ${MAX_CLUSTER_IMAGES} images per call`);
+  }
+
+  const content: Anthropic.Messages.ContentBlockParam[] = [];
+  for (let i = 0; i < images.length; i++) {
+    content.push({ type: "text", text: `Image ${i + 1}:` });
+    content.push(imageBlock(images[i]));
+  }
+  content.push({
+    type: "text",
+    text: `Cluster these ${images.length} images into 2 or 3 vibe groups. Call cluster_by_vibe.`,
+  });
+
+  const run = async (): Promise<VibeCluster[]> => {
+    const res = await client().messages.create({
+      model: MODEL,
+      max_tokens: CLUSTER_MAX_TOKENS,
+      system: CLUSTER_SYSTEM_PROMPT,
+      tools: [CLUSTER_TOOL],
+      tool_choice: { type: "tool", name: "cluster_by_vibe" },
+      messages: [{ role: "user", content }],
+    });
+    const tool = res.content.find(b => b.type === "tool_use");
+    if (!tool || tool.type !== "tool_use") {
+      throw new Error("Haiku did not call cluster_by_vibe");
+    }
+    const parsed = ClusterPayloadSchema.parse(tool.input);
+
+    // Map 1-based indices back to itemIds and dedupe across clusters
+    // (defence: prompt forbids duplicates but the model occasionally slips).
+    const seen = new Set<string>();
+    const out: VibeCluster[] = [];
+    for (let ci = 0; ci < parsed.clusters.length; ci++) {
+      const c = parsed.clusters[ci];
+      const ids: string[] = [];
+      for (const idx of c.image_indices) {
+        const zeroIdx = idx - 1;
+        if (zeroIdx < 0 || zeroIdx >= itemIds.length) continue;
+        const id = itemIds[zeroIdx];
+        if (seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      if (ids.length === 0) continue;
+      out.push({
+        id: `c${ci + 1}`,
+        label: c.label,
+        summary: c.summary,
+        itemIds: ids,
+      });
+    }
+
+    // Backfill — if model omitted any indices, drop them into the first cluster.
+    const unassigned = itemIds.filter(id => !seen.has(id));
+    if (unassigned.length > 0 && out.length > 0) {
+      out[0].itemIds.push(...unassigned);
+    }
+
+    if (out.length === 0) throw new Error("Haiku returned no usable clusters");
+    return out;
+  };
+
+  try {
+    return await run();
+  } catch (err) {
     if (err instanceof z.ZodError) return await run();
     throw err;
   }

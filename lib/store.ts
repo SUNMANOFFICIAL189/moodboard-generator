@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { BoardItem, ImageResult } from "./types";
 import { uid } from "./utils";
 
@@ -28,7 +28,14 @@ function save(state: BoardState) {
 
 export function useBoard() {
   const [items, setItems] = useState<BoardItem[]>([]);
+  const [rejected, setRejected] = useState<BoardItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
+
+  // Ref mirror for reading latest state inside callbacks without re-binding.
+  const itemsRef = useRef<BoardItem[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   useEffect(() => {
     setItems(load().items);
@@ -38,6 +45,8 @@ export function useBoard() {
   useEffect(() => {
     if (hydrated) save({ items });
   }, [items, hydrated]);
+
+  // Rejected items are NOT persisted — they're a per-session soft-delete bin.
 
   const addImage = useCallback((image: ImageResult) => {
     setItems(prev => {
@@ -106,8 +115,39 @@ export function useBoard() {
 
   const clear = useCallback(() => setItems([]), []);
 
+  // ─── Refine: soft-reject items into a recoverable tray ────────────────────
+
+  const rejectItems = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const current = itemsRef.current;
+    const toReject = current.filter(it => idSet.has(it.id));
+    if (toReject.length === 0) return;
+    setItems(current.filter(it => !idSet.has(it.id)));
+    setRejected(prev => {
+      const existing = new Set(prev.map(r => r.id));
+      const fresh = toReject.filter(r => !existing.has(r.id));
+      return fresh.length > 0 ? [...prev, ...fresh] : prev;
+    });
+  }, []);
+
+  const restoreFromRejected = useCallback((id: string) => {
+    setRejected(prev => {
+      const found = prev.find(r => r.id === id);
+      if (!found) return prev;
+      setItems(its => {
+        const maxZ = its.reduce((m, it) => Math.max(m, it.z), 0);
+        return [...its, { ...found, z: maxZ + 1 }];
+      });
+      return prev.filter(r => r.id !== id);
+    });
+  }, []);
+
+  const clearRejected = useCallback(() => setRejected([]), []);
+
   return {
     items,
+    rejected,
     hydrated,
     addImage,
     addImagesAt,
@@ -115,5 +155,8 @@ export function useBoard() {
     removeItem,
     bringToFront,
     clear,
+    rejectItems,
+    restoreFromRejected,
+    clearRejected,
   };
 }

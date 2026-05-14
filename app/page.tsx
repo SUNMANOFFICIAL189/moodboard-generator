@@ -3,6 +3,8 @@
 import dynamic from "next/dynamic";
 import { useCallback, useRef, useState } from "react";
 import SearchPanel from "@/components/SearchPanel";
+import RefineModal from "@/components/RefineModal";
+import RejectedTray from "@/components/RejectedTray";
 import { useBoard } from "@/lib/store";
 import {
   useUploadPool,
@@ -11,19 +13,96 @@ import {
 } from "@/lib/upload-pool";
 import { exportZip, exportCanvasPNG } from "@/lib/export";
 import type { CanvasHandle } from "@/components/Canvas";
-import type { UploadedImage } from "@/lib/types";
-import { Download, FileImage, Trash2, Sparkles, Magnet } from "lucide-react";
+import type {
+  BoardItem,
+  ClusterRequestItem,
+  ClusterResponse,
+  UploadedImage,
+  VibeCluster,
+} from "@/lib/types";
+import {
+  Download,
+  FileImage,
+  Trash2,
+  Sparkles,
+  Magnet,
+  Wand2,
+} from "lucide-react";
 
 const Canvas = dynamic(() => import("@/components/Canvas"), { ssr: false });
 
+// Cost estimate for a single Haiku 4.5 vision call clustering N images.
+// Image tokens ~= ceil(w*h / 750). Resized to ≤1568 dim → ~3300 tokens worst-case.
+// We resize uploads to 1024 (~1400 tokens). Average ~2000 tokens per image.
+// Haiku 4.5 input: $1/M, output: $5/M.
+function estimateClusterCost(itemCount: number): string {
+  const tokensPerImage = 2000;
+  const systemTokens = 700;
+  const outputTokens = 600;
+  const inputUsd = ((itemCount * tokensPerImage + systemTokens) / 1_000_000) * 1.0;
+  const outputUsd = (outputTokens / 1_000_000) * 5.0;
+  const total = inputUsd + outputUsd;
+
+  if (total < 0.01) return "less than a penny";
+  if (total < 1) return `about ${Math.round(total * 100)} cents`;
+  return `about $${total.toFixed(2)}`;
+}
+
+type RefineStage = "cost" | "loading" | "result" | "error";
+
+async function blobUrlToBase64(blobUrl: string): Promise<string> {
+  const res = await fetch(blobUrl);
+  const blob = await res.blob();
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(typeof fr.result === "string" ? fr.result : "");
+    fr.onerror = () => reject(new Error("read failed"));
+    fr.readAsDataURL(blob);
+  });
+  const idx = dataUrl.indexOf(",");
+  return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+}
+
+async function prepareClusterPayload(
+  items: BoardItem[],
+): Promise<ClusterRequestItem[]> {
+  return Promise.all(
+    items.map(async it => {
+      if (it.image.provider === "upload") {
+        const base64 = await blobUrlToBase64(it.image.fullUrl);
+        return { id: it.id, base64, mediaType: "image/jpeg" };
+      }
+      return { id: it.id, url: it.image.thumbUrl };
+    }),
+  );
+}
+
 export default function Home() {
-  const { items, hydrated, addImage, addImagesAt, updateItem, removeItem, bringToFront, clear } =
-    useBoard();
+  const {
+    items,
+    rejected,
+    hydrated,
+    addImage,
+    addImagesAt,
+    updateItem,
+    removeItem,
+    bringToFront,
+    clear,
+    rejectItems,
+    restoreFromRejected,
+    clearRejected,
+  } = useBoard();
   const uploadPool = useUploadPool();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const canvasRef = useRef<CanvasHandle>(null);
+
+  // Refine modal state
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineStage, setRefineStage] = useState<RefineStage>("cost");
+  const [clusters, setClusters] = useState<VibeCluster[]>([]);
+  const [refineError, setRefineError] = useState<string | null>(null);
 
   const showToast = useCallback(
     (msg: string) => {
@@ -99,6 +178,59 @@ export default function Home() {
     }
   }
 
+  function openRefine() {
+    setClusters([]);
+    setRefineError(null);
+    setRefineStage("cost");
+    setRefineOpen(true);
+  }
+
+  function closeRefine() {
+    if (refineStage === "loading") return;
+    setRefineOpen(false);
+  }
+
+  async function confirmCostAndRun() {
+    setRefineStage("loading");
+    setRefineError(null);
+    try {
+      const payload = await prepareClusterPayload(items);
+      const res = await fetch("/api/cluster", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ items: payload }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `Cluster failed (${res.status})`);
+      }
+      const data = (await res.json()) as ClusterResponse;
+      if (!data.clusters || data.clusters.length === 0) {
+        throw new Error("Haiku returned no clusters — try again");
+      }
+      setClusters(data.clusters);
+      setRefineStage("result");
+    } catch (err) {
+      setRefineError(err instanceof Error ? err.message : "Cluster failed");
+      setRefineStage("error");
+    }
+  }
+
+  function confirmKeep(keepClusterIds: string[]) {
+    const keepSet = new Set(keepClusterIds);
+    const toReject: string[] = [];
+    for (const c of clusters) {
+      if (!keepSet.has(c.id)) toReject.push(...c.itemIds);
+    }
+    if (toReject.length > 0) {
+      rejectItems(toReject);
+      showToast(
+        `Moved ${toReject.length} ${toReject.length === 1 ? "image" : "images"} to Rejected`,
+      );
+    }
+    setRefineOpen(false);
+  }
+
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       <aside className="w-[340px] shrink-0 border-r border-neutral-800">
@@ -122,6 +254,19 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={openRefine}
+              disabled={items.length < 2}
+              className="flex items-center gap-1.5 rounded-md border border-violet-500/40 bg-violet-500/10 px-3 py-1.5 text-xs text-violet-300 transition hover:border-violet-400/60 hover:bg-violet-500/15 hover:text-violet-200 disabled:opacity-30"
+              title={
+                items.length < 2
+                  ? "Need at least 2 images on the board to refine"
+                  : "Cluster the board into vibe groups, keep what fits"
+              }
+            >
+              <Wand2 className="h-3.5 w-3.5" /> Refine vibe
+            </button>
+            <div className="mx-1 h-5 w-px bg-neutral-800" />
             <button
               onClick={() => setSnapEnabled(s => !s)}
               className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition ${
@@ -200,12 +345,31 @@ export default function Home() {
           />
 
           {toast && (
-            <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-md bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-100 shadow-lg">
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-30 -translate-x-1/2 rounded-md bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-100 shadow-lg">
               {toast}
             </div>
           )}
+
+          <RejectedTray
+            rejected={rejected}
+            onRestore={restoreFromRejected}
+            onClearAll={clearRejected}
+          />
         </div>
       </main>
+
+      <RefineModal
+        open={refineOpen}
+        stage={refineStage}
+        itemCount={items.length}
+        estimatedCost={estimateClusterCost(items.length)}
+        clusters={clusters}
+        items={items}
+        errorMessage={refineError}
+        onConfirmCost={confirmCostAndRun}
+        onConfirmKeep={confirmKeep}
+        onClose={closeRefine}
+      />
     </div>
   );
 }
