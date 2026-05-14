@@ -59,6 +59,36 @@ export function useBoard() {
     });
   }, []);
 
+  // Batch placement with pre-computed positions (used by Mode A auto-layout
+  // when files are dropped directly onto the canvas).
+  const addImagesAt = useCallback(
+    (
+      placements: Array<{
+        image: ImageResult;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }>,
+    ) => {
+      setItems(prev => {
+        const startZ = prev.reduce((m, it) => Math.max(m, it.z), 0);
+        const newItems: BoardItem[] = placements.map((p, i) => ({
+          id: uid(),
+          image: p.image,
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height,
+          rotation: 0,
+          z: startZ + 1 + i,
+        }));
+        return [...prev, ...newItems];
+      });
+    },
+    [],
+  );
+
   const updateItem = useCallback((id: string, patch: Partial<BoardItem>) => {
     setItems(prev => prev.map(it => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
@@ -76,5 +106,14 @@ export function useBoard() {
 
   const clear = useCallback(() => setItems([]), []);
 
-  return { items, hydrated, addImage, updateItem, removeItem, bringToFront, clear };
+  return {
+    items,
+    hydrated,
+    addImage,
+    addImagesAt,
+    updateItem,
+    removeItem,
+    bringToFront,
+    clear,
+  };
 }

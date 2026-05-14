@@ -1,20 +1,91 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import SearchPanel from "@/components/SearchPanel";
 import { useBoard } from "@/lib/store";
+import {
+  useUploadPool,
+  uploadToImageResult,
+  autoLayoutPositions,
+} from "@/lib/upload-pool";
 import { exportZip, exportCanvasPNG } from "@/lib/export";
 import type { CanvasHandle } from "@/components/Canvas";
+import type { UploadedImage } from "@/lib/types";
 import { Download, FileImage, Trash2, Sparkles, Magnet } from "lucide-react";
 
 const Canvas = dynamic(() => import("@/components/Canvas"), { ssr: false });
 
 export default function Home() {
-  const { items, hydrated, addImage, updateItem, removeItem, bringToFront, clear } = useBoard();
+  const { items, hydrated, addImage, addImagesAt, updateItem, removeItem, bringToFront, clear } =
+    useBoard();
+  const uploadPool = useUploadPool();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
   const canvasRef = useRef<CanvasHandle>(null);
+
+  const showToast = useCallback(
+    (msg: string) => {
+      setToast(msg);
+      window.setTimeout(() => setToast(null), uploadPool.toastMs);
+    },
+    [uploadPool.toastMs],
+  );
+
+  // Mode A: drop files directly on canvas → add to pool + auto-layout onto board.
+  const handleCanvasFilesDropped = useCallback(
+    async (files: File[], dropAtViewport?: { x: number; y: number }) => {
+      if (files.length === 0) return;
+      const result = await uploadPool.addFiles(files);
+      if (result.added.length > 0) {
+        const positions = autoLayoutPositions(result.added, {
+          startX: dropAtViewport?.x ?? 160,
+          startY: dropAtViewport?.y ?? 160,
+          targetWidth: 200,
+          gap: 10,
+        });
+        addImagesAt(
+          result.added.map((u, i) => ({
+            image: uploadToImageResult(u),
+            x: positions[i].x,
+            y: positions[i].y,
+            width: positions[i].width,
+            height: positions[i].height,
+          })),
+        );
+        showToast(
+          `Added ${result.added.length} ${result.added.length === 1 ? "image" : "images"} to canvas` +
+            (result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ""),
+        );
+      } else if (result.skipped.length > 0) {
+        showToast(`Skipped ${result.skipped.length}: ${result.skipped[0].reason}`);
+      }
+    },
+    [uploadPool, addImagesAt, showToast],
+  );
+
+  // Drag an upload thumbnail from panel onto canvas → place at drop point.
+  const handleCanvasUploadDropped = useCallback(
+    (upload: UploadedImage, dropAtViewport: { x: number; y: number }) => {
+      const positions = autoLayoutPositions([upload], {
+        startX: dropAtViewport.x,
+        startY: dropAtViewport.y,
+        targetWidth: 260,
+        gap: 10,
+      });
+      addImagesAt([
+        {
+          image: uploadToImageResult(upload),
+          x: positions[0].x,
+          y: positions[0].y,
+          width: positions[0].width,
+          height: positions[0].height,
+        },
+      ]);
+    },
+    [addImagesAt],
+  );
 
   function handleExportPNG() {
     const url = canvasRef.current?.exportPNG();
@@ -31,7 +102,13 @@ export default function Home() {
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       <aside className="w-[340px] shrink-0 border-r border-neutral-800">
-        <SearchPanel onAdd={addImage} />
+        <SearchPanel
+          onAdd={addImage}
+          uploadPool={uploadPool}
+          onUploadAddToCanvas={upload =>
+            handleCanvasUploadDropped(upload, { x: 160, y: 160 })
+          }
+        />
       </aside>
 
       <main className="flex flex-1 flex-col">
@@ -101,7 +178,9 @@ export default function Home() {
                 <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-neutral-800 bg-neutral-900">
                   <Sparkles className="h-5 w-5 text-neutral-500" />
                 </div>
-                <p className="text-sm text-neutral-500">Search for images, then click Add</p>
+                <p className="text-sm text-neutral-500">
+                  Search, drag images from My uploads, or drop a folder on the canvas
+                </p>
                 <p className="mt-1 text-xs text-neutral-600">Drag · resize · rotate · scroll to zoom</p>
               </div>
             </div>
@@ -115,7 +194,16 @@ export default function Home() {
             onChange={updateItem}
             onBringToFront={bringToFront}
             onDelete={removeItem}
+            onFilesDropped={handleCanvasFilesDropped}
+            getUploadById={id => uploadPool.uploads.find(u => u.id === id) ?? null}
+            onUploadDropped={handleCanvasUploadDropped}
           />
+
+          {toast && (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-md bg-neutral-900/95 px-3 py-1.5 text-xs text-neutral-100 shadow-lg">
+              {toast}
+            </div>
+          )}
         </div>
       </main>
     </div>

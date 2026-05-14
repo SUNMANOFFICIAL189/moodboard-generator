@@ -10,5 +10,8 @@ export function uid(): string {
 }
 
 export function proxied(url: string): string {
+  // Local blob/data URLs are already in-process — proxying would 403 against
+  // the upstream host allowlist.
+  if (url.startsWith("blob:") || url.startsWith("data:")) return url;
   return `/api/proxy?url=${encodeURIComponent(url)}`;
 }

@@ -1,11 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  forwardRef,
+  useImperativeHandle,
+  DragEvent as ReactDragEvent,
+} from "react";
 import { Stage, Layer, Image as KImage, Transformer, Rect } from "react-konva";
 import type Konva from "konva";
 import useImage from "use-image";
-import type { BoardItem } from "@/lib/types";
+import type { BoardItem, UploadedImage } from "@/lib/types";
 import { proxied } from "@/lib/utils";
+import { extractFilesFromDataTransfer } from "@/lib/upload-pool";
 
 const GAP = 10;
 
@@ -21,6 +29,9 @@ interface Props {
   onChange: (id: string, patch: Partial<BoardItem>) => void;
   onBringToFront: (id: string) => void;
   onDelete: (id: string) => void;
+  onFilesDropped?: (files: File[], dropAtViewport?: { x: number; y: number }) => void;
+  getUploadById?: (id: string) => UploadedImage | null;
+  onUploadDropped?: (upload: UploadedImage, at: { x: number; y: number }) => void;
 }
 
 function snapToNeighbors(
@@ -57,13 +68,12 @@ function snapToNeighbors(
       cy: other.y + other.height / 2,
     };
 
-    // X-axis: snap edges with GAP
     const xSnaps = [
-      { drag: dragEdges.right, target: o.left - GAP, offset: 0 },    // right edge → left of other, with gap
-      { drag: dragEdges.left, target: o.right + GAP, offset: 0 },    // left edge → right of other, with gap
-      { drag: dragEdges.left, target: o.left, offset: 0 },           // left → left align
-      { drag: dragEdges.right, target: o.right, offset: 0 },         // right → right align
-      { drag: dragEdges.cx, target: o.cx, offset: 0 },               // center → center align
+      { drag: dragEdges.right, target: o.left - GAP, offset: 0 },
+      { drag: dragEdges.left, target: o.right + GAP, offset: 0 },
+      { drag: dragEdges.left, target: o.left, offset: 0 },
+      { drag: dragEdges.right, target: o.right, offset: 0 },
+      { drag: dragEdges.cx, target: o.cx, offset: 0 },
     ];
 
     for (const s of xSnaps) {
@@ -74,13 +84,12 @@ function snapToNeighbors(
       }
     }
 
-    // Y-axis: snap edges with GAP
     const ySnaps = [
-      { drag: dragEdges.bottom, target: o.top - GAP, offset: 0 },    // bottom → top of other, with gap
-      { drag: dragEdges.top, target: o.bottom + GAP, offset: 0 },    // top → bottom of other, with gap
-      { drag: dragEdges.top, target: o.top, offset: 0 },             // top → top align
-      { drag: dragEdges.bottom, target: o.bottom, offset: 0 },       // bottom → bottom align
-      { drag: dragEdges.cy, target: o.cy, offset: 0 },               // center → center align
+      { drag: dragEdges.bottom, target: o.top - GAP, offset: 0 },
+      { drag: dragEdges.top, target: o.bottom + GAP, offset: 0 },
+      { drag: dragEdges.top, target: o.top, offset: 0 },
+      { drag: dragEdges.bottom, target: o.bottom, offset: 0 },
+      { drag: dragEdges.cy, target: o.cy, offset: 0 },
     ];
 
     for (const s of ySnaps) {
@@ -96,7 +105,18 @@ function snapToNeighbors(
 }
 
 const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
-  { items, selectedId, snapEnabled, onSelect, onChange, onBringToFront, onDelete },
+  {
+    items,
+    selectedId,
+    snapEnabled,
+    onSelect,
+    onChange,
+    onBringToFront,
+    onDelete,
+    onFilesDropped,
+    getUploadById,
+    onUploadDropped,
+  },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -104,6 +124,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
+  const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -155,11 +176,69 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
     });
   }
 
+  // Convert browser pageX/pageY into board-space coords (accounting for pan + zoom).
+  function pageToBoard(clientX: number, clientY: number): { x: number; y: number } | null {
+    const el = containerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+    return {
+      x: (sx - stagePos.x) / scale,
+      y: (sy - stagePos.y) / scale,
+    };
+  }
+
+  async function handleDrop(e: ReactDragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDropActive(false);
+
+    // Internal drag from upload panel → place at drop point.
+    const uploadId = e.dataTransfer.getData("application/x-moodboard-upload");
+    if (uploadId && getUploadById && onUploadDropped) {
+      const upload = getUploadById(uploadId);
+      if (upload) {
+        const at = pageToBoard(e.clientX, e.clientY);
+        if (at) onUploadDropped(upload, at);
+        return;
+      }
+    }
+
+    // OS file/folder drop → auto-layout starting near drop point.
+    if (!onFilesDropped) return;
+    const all = await extractFilesFromDataTransfer(e.dataTransfer);
+    const images = all.filter(f => f.type.startsWith("image/"));
+    if (images.length > 0) {
+      const at = pageToBoard(e.clientX, e.clientY);
+      onFilesDropped(images, at ?? undefined);
+    }
+  }
+
+  function handleDragOver(e: ReactDragEvent<HTMLDivElement>) {
+    // Accept files and our internal upload MIME.
+    const types = Array.from(e.dataTransfer.types);
+    const accepts =
+      types.includes("Files") ||
+      types.includes("application/x-moodboard-upload");
+    if (!accepts) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!dropActive) setDropActive(true);
+  }
+
+  function handleDragLeave(e: ReactDragEvent<HTMLDivElement>) {
+    // Only flip off when leaving the container itself, not entering a child.
+    if (e.currentTarget === e.target) setDropActive(false);
+  }
+
   const sorted = [...items].sort((a, b) => a.z - b.z);
 
   return (
     <div
       ref={containerRef}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       className="relative h-full w-full overflow-hidden bg-neutral-100 dark:bg-neutral-900"
       style={{
         backgroundImage:
@@ -204,6 +283,14 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
           ))}
         </Layer>
       </Stage>
+
+      {dropActive && (
+        <div className="pointer-events-none absolute inset-3 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-violet-400/70 bg-violet-500/5 text-violet-200 backdrop-blur-[1px]">
+          <div className="rounded-lg bg-neutral-900/80 px-4 py-2 text-sm font-medium">
+            Drop here to add to canvas
+          </div>
+        </div>
+      )}
 
       <div className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/60 px-2 py-1 text-[10px] font-medium text-white">
         {Math.round(scale * 100)}%

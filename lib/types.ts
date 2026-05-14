@@ -1,4 +1,11 @@
-export type Provider = "unsplash" | "pexels" | "pixabay" | "pinterest" | "arena" | "cosmos";
+export type Provider =
+  | "unsplash"
+  | "pexels"
+  | "pixabay"
+  | "pinterest"
+  | "arena"
+  | "cosmos"
+  | "upload";
 
 export interface ImageResult {
   id: string;
@@ -88,4 +95,17 @@ export interface ResultSet {
   queries: string[];
   vibe?: VibeSummary;
   results: ImageResult[];
+}
+
+// ─── User uploads (Mode A + Mode B intake) ───────────────────────────────────
+
+export interface UploadedImage {
+  id: string;
+  blobUrl: string;
+  width: number;
+  height: number;
+  filename: string;
+  mime: string;
+  bytes: number;
+  addedAt: number;
 }

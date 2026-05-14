@@ -8,9 +8,15 @@ import type {
   ResultSet,
   SimilarSearchInput,
   SimilarSearchResponse,
+  UploadedImage,
   VibeSummary,
 } from "@/lib/types";
 import { cn, proxied, uid } from "@/lib/utils";
+import {
+  extractFilesFromDataTransfer,
+  uploadToImageResult,
+  type useUploadPool,
+} from "@/lib/upload-pool";
 import {
   Search,
   Plus,
@@ -20,19 +26,28 @@ import {
   Sparkles,
   Upload,
   Link2,
+  FolderOpen,
+  Images,
+  Trash2,
 } from "lucide-react";
 
+// User-facing search providers (uploads handled separately, not toggleable).
 const ALL: Provider[] = ["unsplash", "pexels", "pixabay", "pinterest", "arena", "cosmos"];
 const MAX_REFS = 3;
 const MAX_SESSIONS = 5;
 const MAX_UPLOAD_DIM = 1024;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const UPLOADS_TAB_ID = "__uploads__";
+
+type UploadPool = ReturnType<typeof useUploadPool>;
 
 interface Props {
   onAdd: (img: ImageResult) => void;
+  uploadPool: UploadPool;
+  onUploadAddToCanvas: (upload: UploadedImage) => void;
 }
 
-export default function SearchPanel({ onAdd }: Props) {
+export default function SearchPanel({ onAdd, uploadPool, onUploadAddToCanvas }: Props) {
   const [prompt, setPrompt] = useState("");
   const [keywordLoading, setKeywordLoading] = useState(false);
   const [vibeLoading, setVibeLoading] = useState(false);
@@ -47,9 +62,18 @@ export default function SearchPanel({ onAdd }: Props) {
   const [urlInput, setUrlInput] = useState("");
   const [dragOver, setDragOver] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadIntakeLoading, setUploadIntakeLoading] = useState(false);
+  const [uploadsDragOver, setUploadsDragOver] = useState(false);
+  const [uploadFindSimilarId, setUploadFindSimilarId] = useState<string | null>(null);
 
-  const activeSession = sessions.find(s => s.id === activeSessionId) ?? null;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const batchInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const uploadsTabActive = activeSessionId === UPLOADS_TAB_ID;
+  const activeSession = uploadsTabActive
+    ? null
+    : sessions.find(s => s.id === activeSessionId) ?? null;
 
   function addSession(session: ResultSet) {
     setSessions(prev => {
@@ -216,6 +240,85 @@ export default function SearchPanel({ onAdd }: Props) {
 
   function clearReferences() {
     setReferences([]);
+  }
+
+  // ─── Upload pool intake ───────────────────────────────────────────────────
+
+  async function intakeFiles(files: File[]) {
+    if (files.length === 0) return;
+    setUploadIntakeLoading(true);
+    setError(null);
+    try {
+      const result = await uploadPool.addFiles(files);
+      if (result.skipped.length > 0 && result.added.length === 0) {
+        setError(`Skipped ${result.skipped.length}: ${result.skipped[0].reason}`);
+      } else if (result.skipped.length > 0) {
+        setError(`Added ${result.added.length}, skipped ${result.skipped.length} (${result.skipped[0].reason})`);
+      }
+    } finally {
+      setUploadIntakeLoading(false);
+    }
+  }
+
+  function handleUploadsDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setUploadsDragOver(false);
+    // Files / folder
+    extractFilesFromDataTransfer(e.dataTransfer).then(all => {
+      const images = all.filter(f => f.type.startsWith("image/"));
+      if (images.length > 0) {
+        // Switch to the uploads tab so the user sees what they dropped.
+        setActiveSessionId(UPLOADS_TAB_ID);
+        void intakeFiles(images);
+      }
+    });
+  }
+
+  function handleBatchFilesInput(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (files.length > 0) {
+      setActiveSessionId(UPLOADS_TAB_ID);
+      void intakeFiles(files);
+    }
+  }
+
+  async function findSimilarForUpload(upload: UploadedImage) {
+    if (vibeLoading || uploadFindSimilarId) return;
+    setUploadFindSimilarId(upload.id);
+    setError(null);
+    try {
+      // Read the resized blob as base64 → /api/similar accepts base64 input.
+      const base64 = await blobUrlToBase64(upload.blobUrl);
+      const inputs: SimilarSearchInput[] = [
+        { base64, mediaType: upload.mime || "image/jpeg" },
+      ];
+      const res = await fetch("/api/similar", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ images: inputs, providers }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Vibe search failed");
+      } else {
+        const data: SimilarSearchResponse = await res.json();
+        const session: ResultSet = {
+          id: uid(),
+          kind: "vibe",
+          label: vibeLabel(data.vibe),
+          createdAt: Date.now(),
+          queries: data.vibe.queries,
+          vibe: data.vibe,
+          results: data.results,
+        };
+        addSession(session);
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setUploadFindSimilarId(null);
+    }
   }
 
   function handleDrop(e: DragEvent<HTMLDivElement>) {
@@ -398,60 +501,119 @@ export default function SearchPanel({ onAdd }: Props) {
         </button>
       </div>
 
-      {sessions.length > 0 && (
-        <div className="border-b border-neutral-800 px-3 py-2">
-          <div className="flex flex-nowrap gap-1.5 overflow-x-auto">
-            {sessions.map(s => (
-              <SessionTab
-                key={s.id}
-                session={s}
-                active={s.id === activeSessionId}
-                onSelect={() => setActiveSessionId(s.id)}
-                onClose={() => removeSession(s.id)}
-              />
-            ))}
-          </div>
+      <div className="border-b border-neutral-800 px-3 py-2">
+        <div className="flex flex-nowrap gap-1.5 overflow-x-auto">
+          <UploadsTab
+            count={uploadPool.uploads.length}
+            active={uploadsTabActive}
+            onSelect={() => setActiveSessionId(UPLOADS_TAB_ID)}
+          />
+          {sessions.map(s => (
+            <SessionTab
+              key={s.id}
+              session={s}
+              active={s.id === activeSessionId}
+              onSelect={() => setActiveSessionId(s.id)}
+              onClose={() => removeSession(s.id)}
+            />
+          ))}
         </div>
-      )}
+      </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
-        {activeSession?.kind === "vibe" && activeSession.vibe && (
-          <VibeSummaryLine vibe={activeSession.vibe} />
+      <div
+        className={cn(
+          "flex-1 overflow-y-auto p-3 transition",
+          uploadsTabActive && uploadsDragOver && "bg-violet-500/5",
         )}
+        onDragOver={
+          uploadsTabActive
+            ? e => {
+                if (Array.from(e.dataTransfer.types).includes("Files")) {
+                  e.preventDefault();
+                  setUploadsDragOver(true);
+                }
+              }
+            : undefined
+        }
+        onDragLeave={uploadsTabActive ? () => setUploadsDragOver(false) : undefined}
+        onDrop={uploadsTabActive ? handleUploadsDrop : undefined}
+      >
+        {uploadsTabActive ? (
+          <UploadsView
+            uploads={uploadPool.uploads}
+            softCap={uploadPool.softCap}
+            hardCap={uploadPool.hardCap}
+            loading={uploadIntakeLoading}
+            findSimilarId={uploadFindSimilarId}
+            error={error}
+            onPickFiles={() => batchInputRef.current?.click()}
+            onPickFolder={() => folderInputRef.current?.click()}
+            onAdd={u => onUploadAddToCanvas(u)}
+            onFindSimilar={findSimilarForUpload}
+            onRemove={uploadPool.removeUpload}
+            onClearAll={uploadPool.clearUploads}
+          />
+        ) : (
+          <>
+            {activeSession?.kind === "vibe" && activeSession.vibe && (
+              <VibeSummaryLine vibe={activeSession.vibe} />
+            )}
 
-        {activeSession && (
-          <div className="mb-2 text-xs text-neutral-400">{activeSession.results.length} results</div>
-        )}
+            {activeSession && (
+              <div className="mb-2 text-xs text-neutral-400">{activeSession.results.length} results</div>
+            )}
 
-        {allMissing && (
-          <div className="mb-3 rounded-lg border border-amber-900/50 bg-amber-950/30 p-3 text-xs text-amber-200">
-            No API keys found. Add{" "}
-            <code className="rounded bg-amber-900/40 px-1">UNSPLASH_ACCESS_KEY</code>,{" "}
-            <code className="rounded bg-amber-900/40 px-1">PEXELS_API_KEY</code>, or{" "}
-            <code className="rounded bg-amber-900/40 px-1">PIXABAY_API_KEY</code> to{" "}
-            <code className="rounded bg-amber-900/40 px-1">.env.local</code> and restart.
-          </div>
-        )}
+            {allMissing && (
+              <div className="mb-3 rounded-lg border border-amber-900/50 bg-amber-950/30 p-3 text-xs text-amber-200">
+                No API keys found. Add{" "}
+                <code className="rounded bg-amber-900/40 px-1">UNSPLASH_ACCESS_KEY</code>,{" "}
+                <code className="rounded bg-amber-900/40 px-1">PEXELS_API_KEY</code>, or{" "}
+                <code className="rounded bg-amber-900/40 px-1">PIXABAY_API_KEY</code> to{" "}
+                <code className="rounded bg-amber-900/40 px-1">.env.local</code> and restart.
+              </div>
+            )}
 
-        {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+            {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
 
-        {!activeSession && !keywordLoading && !vibeLoading && !error && (
-          <p className="mt-8 text-center text-sm text-neutral-600">Results will appear here.</p>
-        )}
+            {!activeSession && !keywordLoading && !vibeLoading && !error && (
+              <p className="mt-8 text-center text-sm text-neutral-600">Results will appear here.</p>
+            )}
 
-        {activeSession && (
-          <div className="grid grid-cols-2 gap-2">
-            {activeSession.results.map(img => (
-              <ResultCard
-                key={`${img.provider}:${img.id}`}
-                img={img}
-                onAdd={onAdd}
-                onFindSimilar={() => addReferenceFromResult(img)}
-              />
-            ))}
-          </div>
+            {activeSession && (
+              <div className="grid grid-cols-2 gap-2">
+                {activeSession.results.map(img => (
+                  <ResultCard
+                    key={`${img.provider}:${img.id}`}
+                    img={img}
+                    onAdd={onAdd}
+                    onFindSimilar={() => addReferenceFromResult(img)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
+
+      {/* Hidden file pickers for the My uploads tab */}
+      <input
+        ref={batchInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={handleBatchFilesInput}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        // @ts-expect-error — non-standard but widely supported folder picker hint
+        webkitdirectory=""
+        directory=""
+        multiple
+        className="hidden"
+        onChange={handleBatchFilesInput}
+      />
     </div>
   );
 }
@@ -636,4 +798,234 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = reject;
     img.src = src;
   });
+}
+
+// Read a blob URL into a raw base64 string (no data: prefix) for /api/similar.
+async function blobUrlToBase64(blobUrl: string): Promise<string> {
+  const res = await fetch(blobUrl);
+  const blob = await res.blob();
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(typeof fr.result === "string" ? fr.result : "");
+    fr.onerror = () => reject(new Error("read failed"));
+    fr.readAsDataURL(blob);
+  });
+  const idx = dataUrl.indexOf(",");
+  return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+}
+
+// ─── Uploads tab + view ──────────────────────────────────────────────────────
+
+function UploadsTab({
+  count,
+  active,
+  onSelect,
+}: {
+  count: number;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition",
+        active
+          ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200"
+          : "border-neutral-800 bg-neutral-900 text-neutral-500 hover:text-neutral-300",
+      )}
+      title="Your uploaded images"
+    >
+      <Images className="h-3 w-3" />
+      <span>My uploads</span>
+      <span className="text-[10px] opacity-60">{count}</span>
+    </button>
+  );
+}
+
+function UploadsView({
+  uploads,
+  softCap,
+  hardCap,
+  loading,
+  findSimilarId,
+  error,
+  onPickFiles,
+  onPickFolder,
+  onAdd,
+  onFindSimilar,
+  onRemove,
+  onClearAll,
+}: {
+  uploads: UploadedImage[];
+  softCap: number;
+  hardCap: number;
+  loading: boolean;
+  findSimilarId: string | null;
+  error: string | null;
+  onPickFiles: () => void;
+  onPickFolder: () => void;
+  onAdd: (u: UploadedImage) => void;
+  onFindSimilar: (u: UploadedImage) => void;
+  onRemove: (id: string) => void;
+  onClearAll: () => void;
+}) {
+  const overSoft = uploads.length >= softCap;
+  const atHard = uploads.length >= hardCap;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onPickFiles}
+          disabled={loading || atHard}
+          className="flex items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-[11px] text-neutral-200 transition hover:border-neutral-700 hover:text-white disabled:opacity-30"
+        >
+          <Upload className="h-3 w-3" /> Add images
+        </button>
+        <button
+          type="button"
+          onClick={onPickFolder}
+          disabled={loading || atHard}
+          className="flex items-center gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-[11px] text-neutral-200 transition hover:border-neutral-700 hover:text-white disabled:opacity-30"
+        >
+          <FolderOpen className="h-3 w-3" /> Add folder
+        </button>
+        {uploads.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              if (confirm(`Remove all ${uploads.length} uploads from this session?`)) onClearAll();
+            }}
+            className="ml-auto flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-[10px] text-neutral-400 transition hover:border-red-500/50 hover:text-red-300"
+            title="Clear all uploads"
+          >
+            <Trash2 className="h-3 w-3" /> Clear
+          </button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+          <Loader2 className="h-3 w-3 animate-spin" /> Reading images…
+        </div>
+      )}
+
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      {overSoft && !atHard && (
+        <p className="rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+          Heads up — over {softCap} uploads in this session. Performance stays fine but the pool is getting busy.
+        </p>
+      )}
+      {atHard && (
+        <p className="rounded-md border border-red-900/50 bg-red-950/30 px-3 py-2 text-[11px] text-red-200">
+          Upload pool is full ({hardCap}). Remove some before adding more.
+        </p>
+      )}
+
+      {uploads.length === 0 ? (
+        <div className="mt-4 rounded-lg border border-dashed border-neutral-700 bg-neutral-900/40 px-4 py-8 text-center">
+          <Images className="mx-auto mb-2 h-6 w-6 text-neutral-600" />
+          <p className="text-sm text-neutral-300">Drop a folder of images here</p>
+          <p className="mt-1 text-[11px] text-neutral-500">
+            …or drop straight on the canvas to lay them out
+          </p>
+          <p className="mt-3 text-[10px] text-neutral-600">
+            They stay for this session — refresh wipes them
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          {uploads.map(u => (
+            <UploadCard
+              key={u.id}
+              upload={u}
+              loadingSimilar={findSimilarId === u.id}
+              onAdd={onAdd}
+              onFindSimilar={onFindSimilar}
+              onRemove={onRemove}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UploadCard({
+  upload,
+  loadingSimilar,
+  onAdd,
+  onFindSimilar,
+  onRemove,
+}: {
+  upload: UploadedImage;
+  loadingSimilar: boolean;
+  onAdd: (u: UploadedImage) => void;
+  onFindSimilar: (u: UploadedImage) => void;
+  onRemove: (id: string) => void;
+}) {
+  function handleDragStart(e: DragEvent<HTMLDivElement>) {
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("application/x-moodboard-upload", upload.id);
+    e.dataTransfer.setData("text/plain", upload.filename);
+    // Also expose an ImageResult shape so the existing vibe drop-zone can
+    // consume it (drag-to-vibe-zone returns the upload as a reference).
+    e.dataTransfer.setData(
+      "application/x-moodboard-result",
+      JSON.stringify(uploadToImageResult(upload)),
+    );
+  }
+
+  return (
+    <div
+      draggable
+      onDragStart={handleDragStart}
+      className="group relative cursor-grab overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 active:cursor-grabbing"
+      title="Drag to canvas, or use buttons below"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={upload.blobUrl}
+        alt={upload.filename}
+        className="aspect-[4/3] w-full object-cover"
+        loading="lazy"
+        draggable={false}
+      />
+      <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/80 via-transparent to-transparent p-2 opacity-0 transition group-hover:opacity-100">
+        <div className="flex justify-end gap-1">
+          <button
+            type="button"
+            onClick={() => onFindSimilar(upload)}
+            disabled={loadingSimilar}
+            className="rounded bg-black/60 p-1 text-neutral-200 hover:bg-violet-500 hover:text-white disabled:opacity-50"
+            title="Find similar to this"
+          >
+            {loadingSimilar ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => onRemove(upload.id)}
+            className="rounded bg-black/60 p-1 text-neutral-300 hover:bg-red-500 hover:text-white"
+            title="Remove from pool"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+        <div className="flex items-end justify-between gap-2">
+          <span className="truncate text-[10px] text-neutral-300" title={upload.filename}>
+            {upload.filename}
+          </span>
+          <button
+            onClick={() => onAdd(upload)}
+            className="flex shrink-0 items-center gap-1 rounded bg-white px-2 py-1 text-[10px] font-medium text-neutral-950"
+          >
+            <Plus className="h-3 w-3" /> Add
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
