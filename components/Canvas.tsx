@@ -22,6 +22,9 @@ export type Tool = "select" | "pan";
 
 export interface CanvasHandle {
   exportPNG: () => string | null;
+  // Re-centre the viewport on a board-space point so the user can see
+  // recently-placed items even if they landed far from the current view.
+  focusOn: (boardX: number, boardY: number) => void;
 }
 
 export interface MouseEventInfo {
@@ -241,6 +244,15 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas(
       const stage = stageRef.current;
       if (!stage) return null;
       return stage.toDataURL({ pixelRatio: 2, mimeType: "image/png" });
+    },
+    focusOn: (boardX: number, boardY: number) => {
+      // Place (boardX, boardY) at the visual centre of the viewport.
+      // Math: screen = stagePos + board * scale, so for screen = centre:
+      //       stagePos = centre - board * scale
+      // Leave a slight upward bias so new items have a bit of space below.
+      const cx = size.w / 2;
+      const cy = size.h * 0.35;
+      setStagePos({ x: cx - boardX * scale, y: cy - boardY * scale });
     },
   }));
 

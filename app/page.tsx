@@ -205,6 +205,10 @@ export default function Home() {
             height: positions[i].height,
           })),
         );
+        // Drop targets are already in the viewport (drop event has clientX/Y),
+        // but if a deferred user-initiated drop landed off-screen we still
+        // recentre to be safe.
+        canvasRef.current?.focusOn(positions[0].x, positions[0].y);
         showToast(
           `Added ${result.added.length} ${result.added.length === 1 ? "image" : "images"} to canvas` +
             (result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ""),
@@ -217,7 +221,8 @@ export default function Home() {
   );
 
   // Batch-place: "Add all to canvas" from the My uploads tab or any results session.
-  // Starts below any existing items so nothing overlaps.
+  // Starts below any existing items so nothing overlaps, then auto-pans the
+  // viewport to the new placement so the user actually sees what just landed.
   const handleSendAllToCanvas = useCallback(
     (imgs: ImageResult[]) => {
       if (imgs.length === 0) return;
@@ -239,6 +244,7 @@ export default function Home() {
           height: positions[i].height,
         })),
       );
+      canvasRef.current?.focusOn(positions[0].x, positions[0].y);
       showToast(`Added ${imgs.length} ${imgs.length === 1 ? "image" : "images"} to canvas`);
     },
     [items, addImagesAt, showToast],
@@ -333,6 +339,12 @@ export default function Home() {
     });
 
     applyRefineResult(toReject, positions);
+
+    // Pan to the cluster layout origin so the user sees the new arrangement
+    // even if they were panned away from (160, 160) before clicking Refine.
+    if (Object.keys(positions).length > 0) {
+      canvasRef.current?.focusOn(160, 160);
+    }
 
     const kept = keptClusters.reduce((n, c) => n + c.itemIds.length, 0);
     const parts: string[] = [];
